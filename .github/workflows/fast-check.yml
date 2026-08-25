@@ -1,38 +1,166 @@
-name: Fast Compile Check
+name: Fast Check (Windows)
 
-# 分段快速验证：只做 checkout + 补丁 + 配置生成 + cargo check，
-# 不跑 vcpkg / Flutter / 打包 / 发布。用于补丁与生成器的分钟级迭代。
+# Segmented fast validation: mirrors the full Windows build environment
+# (patches + generated config + bridge + LLVM + vcpkg) but stops right after
+# `cargo check` - no flutter build, packaging or publishing.
+# A green fast-check means the full build will compile; iterate here first.
+#
+# Differences from build-windows.yml:
+#   - no topmost-window job (runtime DLL, irrelevant to compilation)
+#   - no version injection (stays at upstream version, keeps --locked valid)
+#   - build.py replaced by cargo check --lib
 
 on:
   workflow_dispatch:
     inputs:
-      upstream_ref:
-        description: 'Upstream ref (default 1.4.9)'
+      tag:
+        description: 'Release tag (e.g. 1.4.9 or 1.4.9-9)'
         default: '1.4.9'
         type: string
-      regenerate_only:
-        description: 'Only run the config generator and print stats (skip cargo)'
-        default: 'false'
+      upstream_ref:
+        description: 'Upstream source ref (defaults to the tag)'
+        default: '1.4.9'
         type: string
 
 permissions:
   contents: read
 
 env:
-  UPSTREAM_REPO: rustdesk/rustdesk
-  SOURCE_REF: ${{ inputs.upstream_ref || '1.4.9' }}
+  RUST_VERSION: "1.75"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  LLVM_VERSION: "15.0.6"
   CARGO_EXPAND_VERSION: "1.0.95"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  SOURCE_REF: ${{ inputs.upstream_ref || inputs.tag }}
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
 jobs:
-  check:
-    runs-on: ubuntu-24.04
+  generate-bridge:
+    name: Generate flutter bridge
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout upstream source
         uses: actions/checkout@v4
         with:
           repository: ${{ env.UPSTREAM_REPO }}
-          ref: ${{ inputs.upstream_ref || '1.4.9' }}
+          ref: ${{ env.SOURCE_REF }}
+          submodules: recursive
+
+      # Cache the generated outputs so repeated checks skip codegen entirely.
+      # Key covers every input that can change the output.
+      - name: Cache bridge outputs
+        id: bridge-cache
+        uses: actions/cache@v4
+        with:
+          path: ./bridge-out
+          key: bridge-out-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/flutter_ffi.rs') }}
+
+      - name: Install prerequisites
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake curl gcc g++ git libclang-dev \
+            libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+
+      - name: Install Rust toolchain
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        with:
+          prefix-key: bridge
+
+      - name: Cache bridge deps
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /tmp/flutter_rust_bridge
+          key: bridge-${{ env.BRIDGE_FLUTTER_VERSION }}
+
+      - name: Install flutter
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+
+      - name: Generate bridge
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          # Flutter 3.22.3 needs a downgraded extended_text to resolve deps.
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          pushd flutter && flutter pub get && popd
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      # Stage outputs under ./bridge-out preserving their relative layout so a
+      # later cache hit can simply copy them back into place.
+      - name: Stage bridge outputs for cache
+        if: steps.bridge-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p bridge-out/src bridge-out/flutter/lib \
+                   bridge-out/flutter/macos/Runner bridge-out/flutter/ios/Runner
+          cp ./src/bridge_generated.rs ./src/bridge_generated.io.rs bridge-out/src/
+          cp ./flutter/lib/generated_bridge.dart ./flutter/lib/generated_bridge.freezed.dart bridge-out/flutter/lib/
+          cp ./flutter/macos/Runner/bridge_generated.h bridge-out/flutter/macos/Runner/
+          cp ./flutter/ios/Runner/bridge_generated.h bridge-out/flutter/ios/Runner/
+
+      - name: Restore staged outputs on cache hit
+        if: steps.bridge-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: cp -r ./bridge-out/. ./
+
+      - name: Upload bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact-fast
+          retention-days: 3
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  windows-cargo-check:
+    name: Windows cargo check
+    needs: [generate-bridge]
+    runs-on: windows-2022
+    env:
+      # Job-level so every step sees the same configuration.
+      RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
+      RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
+      RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
+      RD_KEY: ${{ secrets.RD_KEY }}
+      RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
+      RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.SOURCE_REF }}
           submodules: recursive
 
       - name: Checkout this pipeline repo (for patches)
@@ -47,55 +175,76 @@ jobs:
       - name: Generate embedded config from secrets
         shell: bash
         env:
-          RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
-          RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
-          RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
-          RD_KEY: ${{ secrets.RD_KEY }}
-          RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
-          RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+
+      - name: Sanity-check generated module
+        shell: bash
         run: |
-          python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
-          wc -l src/embedded_config.rs
+          python3 - <<'EOF'
+          import re
+          s = open('src/embedded_config.rs', encoding='utf-8').read()
+          problems = []
+          if re.search(r"0x[0-9a-f]{2}[ \t]+0x", s):
+              problems.append("byte array lacks commas")
+          if re.search(r",\s*,", s):
+              problems.append("doubled commas")
+          for sym in ("UPDATE_RELEASE_REPO_OWNER", "unattended_hide_cm", "fn init"):
+              if sym not in s:
+                  problems.append(f"missing symbol {sym}")
+          print(f"module lines={s.count(chr(10))} problems={problems}")
+          if problems:
+              raise SystemExit("generated module is invalid: " + "; ".join(problems))
+          EOF
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact-fast
+          path: ./
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.LLVM_VERSION }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.75"
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: fastcheck
+          prefix-key: fastcheck-win
 
-      # scrap's build.rs requires VCPKG_ROOT with libyuv available
-      - name: Setup vcpkg (for scrap)
-        shell: bash
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
         env:
-          VCPKG_COMMIT_ID: 120deac3062162151622ca4860575a33844ba10b
-        run: |
-          git clone https://github.com/microsoft/vcpkg /opt/vcpkg
-          cd /opt/vcpkg
-          git checkout "$VCPKG_COMMIT_ID"
-          ./bootstrap-vcpkg.sh -disableMetrics
-          ./vcpkg install libyuv --triplet x64-linux
-          echo "VCPKG_ROOT=/opt/vcpkg" >> "$GITHUB_ENV"
-
-      - name: Install prerequisites
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake curl g++ git libpam0g-dev \
-            libasound2-dev libunwind-dev libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev \
-            libva-dev libvdpau-dev libxcb-randr0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxdo-dev libxfixes-dev nasm wget pkg-config libvpx-dev libaom-dev pkg-config
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
 
-      - name: Show generated module structure
+      - name: Cargo check (library, same features as release build)
         shell: bash
-        run: |
-          grep -n "^pub \|^const \|^fn " src/embedded_config.rs || true
-
-      - name: Cargo check (library)
-        if: inputs.regenerate_only != 'true'
-        shell: bash
-        run: cargo check --locked --lib
+        run: cargo check --locked --lib --features flutter,hwcodec,vram
