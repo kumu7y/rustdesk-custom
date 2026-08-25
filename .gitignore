@@ -1,3 +1,6 @@
 # Local working notes - never commit these
 /session-ses_*.md
 /HANDOFF-TASKS.md
+
+# Python artifacts from running the generator locally
+__pycache__/
