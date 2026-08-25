@@ -158,6 +158,17 @@ jobs:
         shell: bash
         run: git apply --whitespace=nowarn --verbose ./pipeline/patches/custom-client.patch
 
+      - name: Generate embedded config from secrets
+        env:
+          RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
+          RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
+          RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
+          RD_KEY: ${{ secrets.RD_KEY }}
+          RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
+          RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+
       - name: Inject release version (Cargo.toml + Cargo.lock, keep --locked valid)
         shell: bash
         env:
@@ -382,4 +393,30 @@ jobs:
               --title "$DISPLAY_VERSION" \
               --notes "Windows installer for RustDesk ${DISPLAY_VERSION}." \
               ./dist/rustdesk-*
+          fi
+
+  alert:
+    name: Alert on failure
+    needs: [generate-bridge, build-topmost-window, build-windows-x64, publish]
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue (deduplicated)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Build failed for ${{ inputs.tag }}"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open \
+            --search "${TITLE} in:title" --json number --jq 'length')
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --body "Build run failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${{ github.run_id }}
+
+          Common causes and fixes are documented in README.md > Troubleshooting."
+          else
+            echo "Failure issue already open."
           fi

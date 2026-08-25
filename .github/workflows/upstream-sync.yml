@@ -79,6 +79,45 @@ jobs:
           Fix: rebase the patch on top of the new tag (see README > Maintaining the patch), then commit and re-run this workflow."
           fi
 
+      - name: Sync build pins from upstream workflow
+        if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/flutter-build.yml" -o /tmp/upstream-fb.yml
+          curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/bridge.yml" -o /tmp/upstream-bridge.yml
+          # Map upstream env keys -> our build-windows.yml keys
+          sync_pin() {
+            local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3"
+            local VAL
+            VAL=$(grep -E "^  ${UP_KEY}: " "$SRC" | head -n1 | sed 's/^[^:]*:[[:space:]]*//; s/"//g' | tr -d '\r')
+            if [ -n "$VAL" ]; then
+              sed -i "s|^  ${LOCAL_KEY}: .*|  ${LOCAL_KEY}: \"${VAL}\"|" \
+                "${GITHUB_WORKSPACE}/.github/workflows/build-windows.yml"
+              echo "${LOCAL_KEY} -> ${VAL}"
+            else
+              echo "::warning::pin ${UP_KEY} not found in ${SRC##*/}"
+            fi
+          }
+          sync_pin SCITER_RUST_VERSION   RUST_VERSION               /tmp/upstream-fb.yml
+          sync_pin FLUTTER_VERSION       FLUTTER_VERSION            /tmp/upstream-fb.yml
+          sync_pin VCPKG_COMMIT_ID       VCPKG_COMMIT_ID            /tmp/upstream-fb.yml
+          sync_pin LLVM_VERSION          LLVM_VERSION               /tmp/upstream-fb.yml
+          sync_pin CARGO_EXPAND_VERSION  CARGO_EXPAND_VERSION       /tmp/upstream-bridge.yml
+          sync_pin FLUTTER_RUST_BRIDGE_VERSION FLUTTER_RUST_BRIDGE_VERSION /tmp/upstream-bridge.yml
+          if ! git diff --quiet .github/workflows/build-windows.yml; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .github/workflows/build-windows.yml
+            git commit -qm "chore: sync build pins from upstream ${TAG}"
+            git push
+            echo "Build pins updated and pushed."
+          else
+            echo "Build pins unchanged."
+          fi
+
       - name: Dispatch build
         if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success'
         shell: bash
