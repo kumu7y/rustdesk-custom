@@ -134,6 +134,15 @@ jobs:
     name: Build Windows x64
     needs: [generate-bridge, build-topmost-window]
     runs-on: windows-2022
+    env:
+      # Job-level so EVERY step (including in-build regeneration) sees the
+      # same configuration. Do not duplicate these at step level.
+      RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
+      RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
+      RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
+      RD_KEY: ${{ secrets.RD_KEY }}
+      RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
+      RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v7
