@@ -20,9 +20,9 @@ permissions:
 
 env:
   UPSTREAM_REPO: "rustdesk/rustdesk"
-  # Repo VARIABLE overrides the default so forks whose release repo is not
-  # named <owner>/rustdesk-release are still checked correctly.
-  RELEASE_REPO: ${{ vars.RELEASE_REPO || format('{0}/rustdesk-release', github.repository_owner) }}
+  # Releases are published to THIS repository by default. Set the
+  # vars.RELEASE_REPO variable only if you publish to a different repository.
+  RELEASE_REPO: ${{ vars.RELEASE_REPO || github.repository }}
 
 jobs:
   sync:

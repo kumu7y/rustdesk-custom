@@ -31,7 +31,6 @@ env:
   TOPMOST_COMMIT_ID: "ecd8d6a139eee76845ea66423fb739af450fda90"
   UPSTREAM_REPO: "rustdesk/rustdesk"
   SOURCE_REF: ${{ inputs.upstream_ref || inputs.tag }}
-  RELEASE_REPO: "kumu7y/rustdesk-release"
   TAG_NAME: "${{ inputs.tag }}"
   VERSION: "${{ inputs.tag }}"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
@@ -403,36 +402,47 @@ jobs:
     name: Publish release
     needs: [build-windows-x64]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/update the Release in this repository
     steps:
-      - name: Check for publish token
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.RELEASE_PAT }}" ]; then
-            echo "::error::Secret RELEASE_PAT is not set. Create a fine-grained PAT with Contents:read/write on ${RELEASE_REPO} and add it as a repo secret."
-            echo "::error::(This repository: https://github.com/${GITHUB_REPOSITORY}/settings/secrets/actions)"
-            exit 1
-          fi
-
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: rustdesk-custom-windows-x64
           path: ./dist
 
-      - name: Publish to release repo
+      - name: Publish release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          # Same-repo publishing uses the built-in token (no PAT needed).
+          # Point vars.RELEASE_REPO at another repository to publish there
+          # instead; that requires the RELEASE_PAT secret with Contents:write.
+          GH_TOKEN_SELF: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
           ls -la ./dist
+          if [ -n "${{ vars.RELEASE_REPO }}" ] && [ "${{ vars.RELEASE_REPO }}" != "${GITHUB_REPOSITORY}" ]; then
+            PUBLISH_REPO="${{ vars.RELEASE_REPO }}"
+            GH_TOKEN="$GH_TOKEN_PAT"
+            if [ -z "$GH_TOKEN" ]; then
+              echo "::error::vars.RELEASE_REPO targets external repository '${PUBLISH_REPO}' but secret RELEASE_PAT is not set."
+              echo "::error::Create a fine-grained PAT with Contents:read/write on that repo, or clear vars.RELEASE_REPO to publish here."
+              exit 1
+            fi
+          else
+            PUBLISH_REPO="${GITHUB_REPOSITORY}"
+            GH_TOKEN="$GH_TOKEN_SELF"
+          fi
+          export GH_TOKEN
+          echo "Publishing ${VERSION} to ${PUBLISH_REPO}"
           DISPLAY_VERSION="${VERSION%%-*}"
-          if gh release view "$VERSION" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+          if gh release view "$VERSION" --repo "$PUBLISH_REPO" >/dev/null 2>&1; then
             echo "Release $VERSION already exists, uploading assets."
-            gh release upload "$VERSION" ./dist/rustdesk-* --repo "$RELEASE_REPO" --clobber
-            gh release edit "$VERSION" --repo "$RELEASE_REPO" --title "$DISPLAY_VERSION"
+            gh release upload "$VERSION" ./dist/rustdesk-* --repo "$PUBLISH_REPO" --clobber
+            gh release edit "$VERSION" --repo "$PUBLISH_REPO" --title "$DISPLAY_VERSION"
           else
             gh release create "$VERSION" \
-              --repo "$RELEASE_REPO" \
+              --repo "$PUBLISH_REPO" \
               --title "$DISPLAY_VERSION" \
               --notes "Windows installer for RustDesk ${DISPLAY_VERSION}." \
               ./dist/rustdesk-*

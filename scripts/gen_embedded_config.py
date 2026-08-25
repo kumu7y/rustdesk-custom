@@ -14,8 +14,9 @@ Environment variables (all optional - omitting everything produces a
   RD_KEY               server Ed25519 public key (base64)
   RD_PRESET_PASSWORD   unattended access password (plaintext; hashed here with a
                        random salt - the plaintext is never written anywhere)
-  RD_RELEASE_REPO      "owner/repo" of the public releases repository used by
-                       the update checker (default: <GITHUB_REPOSITORY_OWNER>/rustdesk-release)
+  RD_RELEASE_REPO      "owner/repo" of the releases repository used by the
+                       update checker (default: the repository running this
+                       build - releases live in the same repo)
   RD_HIDE_NETWORK_UI   hide the whole Network settings tab   (default: true)
   RD_ALLOW_HIDE_CM     enable hiding the CM window            (default: true)
 
@@ -62,9 +63,9 @@ def main() -> int:
     key = env("RD_KEY")
     preset_password = env("RD_PRESET_PASSWORD")
 
-    repo_owner = env("GITHUB_REPOSITORY_OWNER", "")
-    release_repo = env("RD_RELEASE_REPO") or (
-        f"{repo_owner}/rustdesk-release" if repo_owner else "")
+    # Update-check target: explicit secret wins; otherwise the repository
+    # running this build (releases are published to the same repo).
+    release_repo = env("RD_RELEASE_REPO") or env("GITHUB_REPOSITORY")
 
     hide_network_ui = env("RD_HIDE_NETWORK_UI", "true").lower() != "false"
     allow_hide_cm = env("RD_ALLOW_HIDE_CM", "true").lower() != "false"

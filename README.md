@@ -23,9 +23,9 @@
 build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补丁
         │            → 由 Secrets 生成 embedded_config.rs → 编译打包
         ▼
-发布到你自己的公开发布仓（Release 标题显示为官方样式版本号）
+发布到本仓库的 Releases（也可用变量指向外部发布仓）
         ▼
-已部署的客户端每日检查 → 弹窗提示 → 一键升级
+已部署的客户端每日检查本仓库 → 弹窗提示 → 一键升级
 ```
 
 ## 功能特性
@@ -44,25 +44,19 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 - 内置无人值守固定密码（构建时现算加盐哈希，明文不出现在任何地方）
 - 全部以锁定层写入：最终用户在界面中不可见、不可改
 
-## 快速开始（约 10 分钟）
+## 快速开始（约 5 分钟）
 
-1. **Fork 或使用本仓库模板**创建你自己的仓库（建议设为 Public，Actions 免费不限量）
-2. **准备一个公开发布仓**：新建空仓库 `<你的用户名>/rustdesk-release`（用于存放安装包 Release）
-3. **配置仓库变量 `RELEASE_REPO`**：Settings → Secrets and variables → Actions → **Variables** 页签 → 新建变量
-   - Name: `RELEASE_REPO`，Value: `<你的用户名>/rustdesk-release`
-   - 每日同步流程靠它检测"上游新版是否已发布过"；不配置时默认按 `<你的用户名>/rustdesk-release` 推断——若你的发布仓名称不同，**必须**配置，否则会重复派发构建
-4. **配置 Secrets**（Settings → Secrets and variables → Actions）：见下方参考表
-5. **配置跨仓发布令牌 `RELEASE_PAT`**：
-   - GitHub → Settings → Developer settings → Fine-grained tokens → Generate
-   - 仅勾选你的 `rustdesk-release` 仓库，权限 Contents: Read and write
-   - 存为本仓库 Secret `RELEASE_PAT`
-6. **手动触发首次构建**：Actions → Build Windows Custom Client → Run workflow
+1. **Fork 或使用本仓库模板**创建你自己的仓库（Public，Actions 免费不限量；安装包 Release 也发布在本仓库）
+2. **配置 Secrets**（Settings → Secrets and variables → Actions）：见下方参考表
+3. **手动触发首次构建**：Actions → Build Windows Custom Client → Run workflow
    - `tag`：上游版本号（如 `1.4.9`）；也可带本地后缀（如 `1.4.9-1`）
    - `upstream_ref`：留空则同 tag；若 tag 带后缀则需填上游真实 tag
-7. 构建完成后安装包出现在 `https://github.com/<你>/rustdesk-release/releases/tag/<tag>`
-8. 在目标机器安装即可：服务器配置已内置、无需任何设置
+4. 构建完成后安装包出现在本仓库 `https://github.com/<你>/<仓库名>/releases`
+5. 在目标机器安装即可：服务器配置已内置、无需任何设置
 
-之后全自动：上游发新版 → 凌晨自动同步依赖并重建 → 所有已装设备收到更新提示。
+> **可选**：想把安装包发到单独的仓库？设置变量 `RELEASE_REPO` 指向它，并配置有该仓 Contents:write 权限的 `RELEASE_PAT`。不配置则一律发在本仓库，无需任何令牌。
+
+之后全自动：上游发新版 → 凌晨自动过门禁并重建 → 所有已装设备收到更新提示。
 
 ## Secrets 与 Variables 参考
 
@@ -73,12 +67,12 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `RD_RELAY_SERVER` | ➖ | `hbbs.example.com:21117` | 中继服务器（hbbr），缺省自动推导 |
 | `RD_API_SERVER` | ➖ | `https://hbbs.example.com:8888` | API 服务器（登录/地址簿），无则留空 |
 | `RD_PRESET_PASSWORD` | ➖ | 任意明文 | 内置无人值守密码。构建时计算加盐哈希后嵌入，**明文不会出现在代码、日志或产物之外的任何位置**。不配则不内置密码 |
-| `RD_RELEASE_REPO` | ✅* | `you/rustdesk-release` | 更新检查指向的发布仓（`owner/repo`）。*不配置则该客户端禁用自动更新（避免误指他人仓库）|
-| `RELEASE_PAT` | ✅ | fine-grained token | 跨仓库发布用的 Personal Access Token |
+| `RD_RELEASE_REPO` | ✅* | `you/rustdesk-custom` | 更新检查指向的发布仓（`owner/repo`）。*不配置时默认为本仓库；显式配置则覆盖默认 |
+| `RELEASE_PAT` | ➖ | fine-grained token | **仅当**用变量 `RELEASE_REPO` 把安装包发到另一个仓库时需要（该仓 Contents:read/write）。发本仓库无需此令牌 |
 
 | Variable | 必填 | 示例 | 说明 |
 |---|---|---|---|
-| `RELEASE_REPO` | ➖ | `you/rustdesk-release` | 每日同步检测新版时查询的发布仓。缺省按 `<你的用户名>/rustdesk-release` 推断；发布仓名不同则必须配置，否则会重复派发构建 |
+| `RELEASE_REPO` | ➖ | `you/separate-releases` | 安装包发布目标仓，同时是每日同步检测"新版是否已发过"的依据。缺省=本仓库；仅当你要发布到别的仓库时才配置 |
 
 > 未提供任何 `RD_*` 服务器类 Secret 时，产物为「纯行为增强版」：仅包含 UI 行为补丁，不注入任何服务器信息。
 
@@ -92,9 +86,9 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 ## 自动更新机制
 
-- 客户端每日检查 `https://api.github.com/repos/<你>/rustdesk-release/releases/latest`
+- 客户端每日检查发布仓的 `releases/latest` API（默认即本仓库）
 - 发现更高版本号 → 主界面弹出更新卡片，"Changelog" 链接指向上游官方对应版本的 Release 页
-- 点击 Update → 从你的发布仓下载安装包 → 静默升级
+- 点击 Update → 从发布仓下载安装包 → 静默升级
 - 版本号规则：tag 即完整版本号（CI 会写入程序内部版本）。上游小版本迭代建议加 `-N` 本地序号（如 `1.4.9-3`），上游大版本直接用其版本号（如 `1.5.0`）
 
 ## 工作流说明
@@ -103,7 +97,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 |---|---|---|
 | `upstream-sync.yml` | 每日 UTC 21:00 + 手动 | 检测上游新版 → 校验补丁（失败自动开 Issue 附冲突定位）→ 同步构建依赖 pin → **fast-check 编译门禁** → 门禁通过才派发全量构建 |
 | `fast-check.yml` | 手动 / sync 门禁派发 | 复刻完整构建环境后仅跑 `cargo check`（~25 分钟），验证补丁与配置生成可编译，不打包不发布 |
-| `build-windows.yml` | sync 派发 / 手动 | 完整构建 + 跨仓发布；任一环节失败自动开 Issue |
+| `build-windows.yml` | sync 派发 / 手动 | 完整构建 + 发布 Release（默认本仓库）；任一环节失败自动开 Issue |
 | `alert` job | 上述任一作业失败 | 创建防重的失败告警 Issue |
 
 ## 故障排查（Troubleshooting）
