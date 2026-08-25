@@ -159,6 +159,7 @@ jobs:
         run: git apply --whitespace=nowarn --verbose ./pipeline/patches/custom-client.patch
 
       - name: Generate embedded config from secrets
+        shell: bash
         env:
           RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
           RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
@@ -167,7 +168,18 @@ jobs:
           RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
           RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-        run: python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+        run: |
+          python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+          python3 - <<'EOF'
+          s = open('src/embedded_config.rs', encoding='utf-8').read()
+          lines = s.count('\n')
+          syms = ['UPDATE_RELEASE_REPO_OWNER', 'UPDATE_RELEASE_REPO_NAME',
+                  'unattended_hide_cm', 'fn init', 'LOCKED_SERVER_OPTIONS']
+          missing = [k for k in syms if k not in s]
+          print(f'self-check: bytes={len(s)} lines={lines} missing={missing}')
+          if missing or lines < 30:
+              raise SystemExit('generated embedded_config.rs is incomplete!')
+          EOF
 
       - name: Inject release version (Cargo.toml + Cargo.lock, keep --locked valid)
         shell: bash
@@ -267,6 +279,9 @@ jobs:
       - name: Build rustdesk
         shell: pwsh
         run: |
+          if (-not (Test-Path src/embedded_config.rs)) { throw 'src/embedded_config.rs missing before build!' }
+          $lc = (Get-Content src/embedded_config.rs | Measure-Object -Line).Lines
+          Write-Host "embedded_config.rs still present, lines: $lc"
           python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
