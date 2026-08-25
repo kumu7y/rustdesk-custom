@@ -165,7 +165,17 @@ jobs:
 
       - name: Apply custom client patches
         shell: bash
-        run: git apply --whitespace=nowarn --verbose ./pipeline/patches/custom-client.patch
+        run: |
+          # Numbered patches apply in order; a failure names the exact
+          # functional domain that upstream changes broke.
+          for p in ./pipeline/patches/*.patch; do
+            echo "Applying $(basename "$p") ..."
+            git apply --whitespace=nowarn --verbose "$p" || {
+              echo "::error::Patch failed: $(basename "$p")"
+              exit 1
+            }
+          done
+          echo "All patches applied."
 
       - name: Generate embedded config from secrets
         shell: bash

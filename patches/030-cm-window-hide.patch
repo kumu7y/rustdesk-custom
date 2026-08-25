@@ -1,0 +1,17 @@
+diff --git a/src/ipc.rs b/src/ipc.rs
+index 68c987f..844f162 100644
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -861,7 +861,11 @@ async fn handle(data: Data, stream: &mut Connection) {
+                         None
+                     };
+                 } else if name == "hide_cm" {
+-                    value = if crate::hbbs_http::sync::is_pro() || crate::common::is_custom_client()
++                    // Custom client: unattended mode takes precedence and does
++                    // not require permanent-password-only verification.
++                    value = if crate::embedded_config::unattended_hide_cm() {
++                        Some(true.to_string())
++                    } else if crate::hbbs_http::sync::is_pro() || crate::common::is_custom_client()
+                     {
+                         Some(hbb_common::password_security::hide_cm().to_string())
+                     } else {

@@ -1,0 +1,13 @@
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 42ec100..8463c74 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -453,7 +453,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           closeButton: true,
+           help: isToUpdate ? 'Changelog' : null,
+           link: isToUpdate
+-              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
++              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion().split("-").first}'
+               : null);
+     }
+     if (systemError.isNotEmpty) {

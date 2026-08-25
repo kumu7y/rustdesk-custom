@@ -1,0 +1,87 @@
+diff --git a/src/common.rs b/src/common.rs
+index b875d54..5d59112 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -948,19 +948,29 @@ pub fn check_software_update() {
+     }
+ }
+ 
+-// No need to check `danger_accept_invalid_cert` for now.
+-// Because the url is always `https://api.rustdesk.com/version/latest`.
++// Check updates from our own release repository on GitHub instead of the
++// official update API. See `src/embedded_config.rs` for the repository.
+ #[tokio::main(flavor = "current_thread")]
+ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+-    let (request, url) =
+-        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
++    let url = format!(
++        "https://api.github.com/repos/{}/{}/releases/latest",
++        crate::embedded_config::UPDATE_RELEASE_REPO_OWNER,
++        crate::embedded_config::UPDATE_RELEASE_REPO_NAME
++    );
+     let proxy_conf = Config::get_socks();
+     let tls_url = get_url_for_tls(&url, &proxy_conf);
+     let tls_type = get_cached_tls_type(tls_url);
+     let is_tls_not_cached = tls_type.is_none();
+     let tls_type = tls_type.unwrap_or(TlsType::Rustls);
+     let client = create_http_client_async(tls_type, false);
+-    let latest_release_response = match client.post(&url).json(&request).send().await {
++    // GitHub API rejects requests without a User-Agent header.
++    let user_agent = format!("RustDesk/{}", crate::VERSION);
++    let latest_release_response = match client
++        .get(&url)
++        .header("User-Agent", &user_agent)
++        .send()
++        .await
++    {
+         Ok(resp) => {
+             upsert_tls_cache(tls_url, tls_type, false);
+             resp
+@@ -969,7 +979,11 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+             if is_tls_not_cached && err.is_request() {
+                 let tls_type = TlsType::NativeTls;
+                 let client = create_http_client_async(tls_type, false);
+-                let resp = client.post(&url).json(&request).send().await?;
++                let resp = client
++                    .get(&url)
++                    .header("User-Agent", &user_agent)
++                    .send()
++                    .await?;
+                 upsert_tls_cache(tls_url, tls_type, false);
+                 resp
+             } else {
+@@ -977,12 +991,30 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+             }
+         }
+     };
++    if !latest_release_response.status().is_success() {
++        bail!(
++            "Failed to check updates from {}: {}",
++            url,
++            latest_release_response.status()
++        );
++    }
+     let bytes = latest_release_response.bytes().await?;
+-    let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
+-    let response_url = resp.url;
+-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
++    let resp: serde_json::Value = serde_json::from_slice(&bytes)?;
++    let tag = resp
++        .get("tag_name")
++        .and_then(|v| v.as_str())
++        .unwrap_or_default();
++    if tag.is_empty() {
++        bail!("No tag_name found in the update response");
++    }
++    let response_url = format!(
++        "https://github.com/{}/{}/releases/tag/{}",
++        crate::embedded_config::UPDATE_RELEASE_REPO_OWNER,
++        crate::embedded_config::UPDATE_RELEASE_REPO_NAME,
++        tag
++    );
+ 
+-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
++    if get_version_number(tag) > get_version_number(crate::VERSION) {
+         #[cfg(feature = "flutter")]
+         {
+             let mut m = HashMap::new();

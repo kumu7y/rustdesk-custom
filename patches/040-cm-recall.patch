@@ -1,0 +1,55 @@
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+index 1651f67..8be8f94 100644
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -831,6 +831,19 @@ class OverlayDialogManager {
+       String? tag,
+       bool useAnimation = true,
+       bool forceGlobal = false}) {
++    // Custom client: the CM window may be hidden (unattended mode) while a
++    // dialog still needs attention - bring it back so the dialog is visible.
++    if (desktopType == DesktopType.cm) {
++      unawaited(() async {
++        try {
++          if (!await windowManager.isVisible()) {
++            await showCmWindow();
++          }
++        } catch (e) {
++          debugPrint('failed to restore hidden CM window: $e');
++        }
++      }());
++    }
+     final overlayState =
+         forceGlobal ? globalKey.currentState?.overlay : _overlayKeyState.state;
+ 
+diff --git a/flutter/lib/models/server_model.dart b/flutter/lib/models/server_model.dart
+index 40c94fc..73ec4f1 100644
+--- a/flutter/lib/models/server_model.dart
++++ b/flutter/lib/models/server_model.dart
+@@ -530,7 +530,7 @@ class ServerModel with ChangeNotifier {
+     if (desktopType == DesktopType.cm) {
+       if (_clients.isEmpty) {
+         hideCmWindow();
+-      } else if (!hideCm) {
++      } else if (!hideCm || _clients.any((c) => !c.authorized)) {
+         showCmWindow();
+       }
+     }
+@@ -574,7 +574,7 @@ class ServerModel with ChangeNotifier {
+         _clients.removeAt(index_disconnected);
+         tabController.remove(index_disconnected);
+       }
+-      if (desktopType == DesktopType.cm && !hideCm) {
++      if (desktopType == DesktopType.cm && (!hideCm || !client.authorized)) {
+         showCmWindow();
+       }
+       scrollToBottom();
+@@ -594,7 +594,7 @@ class ServerModel with ChangeNotifier {
+         onTap: () {},
+         page: desktop.buildConnectionCard(client)));
+     Future.delayed(Duration.zero, () async {
+-      if (!hideCm) windowOnTop(null);
++      if (!hideCm || !client.authorized) windowOnTop(null);
+     });
+     // Only do the hidden task when on Desktop.
+     if (client.authorized && isDesktop) {

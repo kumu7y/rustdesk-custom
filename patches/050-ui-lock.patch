@@ -1,0 +1,40 @@
+diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
+index 8bd7df0..cd9ac43 100644
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -6,6 +6,7 @@ import 'dart:math';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_hbb/common/widgets/audio_input.dart';
+ import 'package:flutter_hbb/consts.dart';
++import 'package:flutter_hbb/main.dart';
+ import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
+ import 'package:flutter_hbb/models/chat_model.dart';
+ import 'package:flutter_hbb/models/cm_file_model.dart';
+@@ -55,6 +56,12 @@ class _DesktopServerPageState extends State<DesktopServerPage>
+ 
+   @override
+   void onWindowClose() {
++    // Custom client: keep remote sessions alive when the panel is closed -
++    // just hide it (it re-shows automatically on the next event).
++    if (gFFI.serverModel.clients.isNotEmpty) {
++      hideCmWindow();
++      return;
++    }
+     Future.wait([gFFI.serverModel.closeAll(), gFFI.close()]).then((_) {
+       if (isMacOS) {
+         RdPlatformChannel.instance.terminate();
+diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
+index 9bd68ed..202da3b 100644
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -326,6 +326,10 @@ showCmWindow({bool isStartup = false}) async {
+   } else if (_isCmReadyToShow) {
+     if (await windowManager.getOpacity() != 1) {
+       await windowManager.setOpacity(1);
++      // Custom client: hideCmWindow() uses windowManager.hide(), which needs
++      // an explicit show() to become visible again (opacity/focus alone
++      // cannot restore a SW_HIDE window).
++      await windowManager.show();
+       await windowManager.focus();
+       await windowManager.minimize(); //needed
+       await windowManager.setSizeAlignment(
