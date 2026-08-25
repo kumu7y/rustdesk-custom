@@ -10,10 +10,15 @@
 上游 rustdesk/rustdesk 发新版本
         │ 每日定时检测 (upstream-sync.yml)
         ▼
-校验补丁可应用 ──失败──▶ 自动开 Issue 提醒人工修补
+校验补丁可应用 ──失败──▶ 自动开 Issue（附冲突 hunk 定位）
         │ 通过                │
         ▼                     ▼
-同步上游构建依赖 pin       （不派发，避免浪费）
+快速编译门禁 fast-check    （不派发，避免浪费）
+        │ ~25 分钟          ▼
+│ 失败──▶ 开 Issue 附错误摘要（全量构建不启动）
+        │ 通过
+        ▼
+同步上游构建依赖 pin（变更自动开 Issue 供人工复核）
         ▼
 build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补丁
         │            → 由 Secrets 生成 embedded_config.rs → 编译打包
@@ -43,16 +48,19 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 1. **Fork 或使用本仓库模板**创建你自己的仓库（建议设为 Public，Actions 免费不限量）
 2. **准备一个公开发布仓**：新建空仓库 `<你的用户名>/rustdesk-release`（用于存放安装包 Release）
-3. **配置 Secrets**（Settings → Secrets and variables → Actions）：见下方参考表
-4. **配置跨仓发布令牌 `RELEASE_PAT`**：
+3. **配置仓库变量 `RELEASE_REPO`**：Settings → Secrets and variables → Actions → **Variables** 页签 → 新建变量
+   - Name: `RELEASE_REPO`，Value: `<你的用户名>/rustdesk-release`
+   - 每日同步流程靠它检测"上游新版是否已发布过"；不配置时默认按 `<你的用户名>/rustdesk-release` 推断——若你的发布仓名称不同，**必须**配置，否则会重复派发构建
+4. **配置 Secrets**（Settings → Secrets and variables → Actions）：见下方参考表
+5. **配置跨仓发布令牌 `RELEASE_PAT`**：
    - GitHub → Settings → Developer settings → Fine-grained tokens → Generate
    - 仅勾选你的 `rustdesk-release` 仓库，权限 Contents: Read and write
    - 存为本仓库 Secret `RELEASE_PAT`
-5. **手动触发首次构建**：Actions → Build Windows Custom Client → Run workflow
+6. **手动触发首次构建**：Actions → Build Windows Custom Client → Run workflow
    - `tag`：上游版本号（如 `1.4.9`）；也可带本地后缀（如 `1.4.9-1`）
    - `upstream_ref`：留空则同 tag；若 tag 带后缀则需填上游真实 tag
-6. 构建完成后安装包出现在 `https://github.com/<你>/rustdesk-release/releases/tag/<tag>`
-7. 在目标机器安装即可：服务器配置已内置、无需任何设置
+7. 构建完成后安装包出现在 `https://github.com/<你>/rustdesk-release/releases/tag/<tag>`
+8. 在目标机器安装即可：服务器配置已内置、无需任何设置
 
 之后全自动：上游发新版 → 凌晨自动同步依赖并重建 → 所有已装设备收到更新提示。
 
@@ -89,7 +97,8 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 | 工作流 | 触发 | 职责 |
 |---|---|---|
-| `upstream-sync.yml` | 每日 UTC 21:00 + 手动 | 检测上游新版 → 校验补丁 → 自动同步构建依赖 pin → 派发构建；补丁失效时自动开 Issue |
+| `upstream-sync.yml` | 每日 UTC 21:00 + 手动 | 检测上游新版 → 校验补丁（失败自动开 Issue 附冲突定位）→ 同步构建依赖 pin → **fast-check 编译门禁** → 门禁通过才派发全量构建 |
+| `fast-check.yml` | 手动 / sync 门禁派发 | 复刻完整构建环境后仅跑 `cargo check`（~25 分钟），验证补丁与配置生成可编译，不打包不发布 |
 | `build-windows.yml` | sync 派发 / 手动 | 完整构建 + 跨仓发布；任一环节失败自动开 Issue |
 | `alert` job | 上述任一作业失败 | 创建防重的失败告警 Issue |
 
@@ -97,7 +106,8 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| `Apply custom client patches` 失败 | 上游改动触及补丁区域，sync 已自动开 Issue | 按 Issue 指引：解压上游新 tag 源码 → 重新调整补丁覆盖的文件 → 重新生成 patch（方法见下节）|
+| `Apply custom client patches` 失败并报出编号（如 `040-cm-recall.patch`）| 上游改动触及该功能域的补丁区域，sync 已自动开 Issue 并列出冲突 hunk | 只需修复报编号的那一片：解压上游新 tag 源码 → 调整对应文件 → 重新生成该编号 patch（方法见下节）|
+| `Windows cargo check`（fast-check 门禁）失败 | 补丁能贴上但编译不过（上游重构了周边代码）| 看 Issue 中的错误摘要或门禁 run 日志，修复后重跑 sync；全量构建不会启动，不浪费额度 |
 | `Build rustdesk` 编译失败 | 上游升级了 Flutter/Rust/vcpkg 且自动 pin 同步未完全覆盖 | 对照上游 `flutter-build.yml@<tag>` 的 env 与步骤 diff，手工修正 build-windows.yml |
 | `Publish release` 报 RELEASE_PAT | 令牌过期或未配置 | 重新生成并更新 Secret，然后 Re-run failed jobs |
 | 客户端从不提示更新 | `RD_RELEASE_REPO` 未配置或拼写错误 | 检查 Secret；确认发布仓存在对应 tag 的 Release |
@@ -105,30 +115,30 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 ## 补丁维护（上游变更后如何重新打补丁）
 
-补丁文件 `patches/custom-client.patch` 覆盖以下行为（不含任何个人信息，可安全公开）：
+行为补丁按功能域拆分为**有序编号的小 patch**（不含任何个人信息，可安全公开）。sync 校验失败时会直接报出失效编号：
 
-| 文件 | 内容 |
+| 补丁文件 | 功能域 |
 |---|---|
-| `src/lib.rs` / `src/core_main.rs` | 注册并在启动时调用配置注入模块 |
-| `src/common.rs` | 更新检查重定向到你的发布仓 |
-| `src/ipc.rs` | 无人值守模式下允许隐藏连接管理窗口 |
-| `flutter/lib/common.dart` | 确认对话框触发时自动唤回隐藏的面板 |
-| `flutter/lib/desktop/pages/server_page.dart` | 点 X 关闭面板不断开会话 |
-| `flutter/lib/desktop/pages/main.dart`（经 server_model 联动）| 从隐藏态恢复可见性 |
-| `flutter/lib/models/server_model.dart` | 未授权访客强制唤回面板 |
-| `flutter/lib/desktop/pages/desktop_home_page.dart` | Changelog 链接剥离本地后缀 |
+| `010-core-config-hook.patch` | `src/lib.rs` / `src/core_main.rs`：注册并在启动时调用配置注入模块 |
+| `020-update-source.patch` | `src/common.rs`：更新检查重定向到你的发布仓 |
+| `030-cm-window-hide.patch` | `src/ipc.rs`：无人值守模式下允许隐藏连接管理窗口 |
+| `040-cm-recall.patch` | `flutter/lib/common.dart`、`models/server_model.dart`：确认事件自动唤回隐藏面板、未授权访客强制唤回 |
+| `050-ui-lock.patch` | `flutter/lib/desktop/pages/server_page.dart`、`main.dart`：点 X 关闭面板不断开、隐藏态恢复可见性 |
+| `060-changelog-link.patch` | `flutter/lib/desktop/pages/desktop_home_page.dart`：Changelog 链接剥离本地后缀 |
 
-重新生成流程：
+> `src/embedded_config.rs` 不属于任何补丁——它由 CI 按 Secrets 用 `scripts/gen_embedded_config.py` 在每次构建前生成。
+
+重新生成某个编号补片的流程（只动受影响的功能域）：
 
 ```bash
-# A=纯净上游源码树, B=A+修改后的源码树
+# A=纯净上游源码树, B=A+你修改后的源码树（只需包含该片覆盖的文件）
 cd A && git init -q && git add -A && git commit -qm base
 cp B/<修改过的文件> 对应路径/
-git add -A && git diff --cached > patches/custom-client.patch
-# 验证：在全新解压的上游树执行 git apply --check
+git add -A && git diff --cached > patches/0NN-<name>.patch
+# 验证：在全新解压的上游树按编号顺序逐个 git apply --check
 ```
 
-`scripts/gen_embedded_config.py` 负责 `src/embedded_config.rs`（该文件不在补丁中，由 CI 按你的 Secrets 生成）。
+构建与快测工作流会按文件名顺序自动循环应用 `patches/*.patch`，任一片失败即报出具体编号。
 
 ## 安全与合规声明
 

@@ -1,8 +1,12 @@
 name: Upstream Sync
 
-# Daily check: when rustdesk upstream publishes a new release, validate our
-# patches against it and dispatch a build. The resulting artifacts are
-# published to the public releases repo by build-windows.yml.
+# Daily check: when rustdesk upstream publishes a new release,
+#  1. validate our split patches against it (collecting precise reject info),
+#  2. sync build pins from the upstream workflows (reporting every change),
+#  3. run the Windows fast-check as a compile gate (~25 min), and only then
+#  4. dispatch the full build.
+# This ordering guarantees we never burn a full Windows build on an upstream
+# release that breaks compilation.
 
 on:
   schedule:
@@ -16,7 +20,9 @@ permissions:
 
 env:
   UPSTREAM_REPO: "rustdesk/rustdesk"
-  RELEASE_REPO: "kumu7y/rustdesk-release"
+  # Repo VARIABLE overrides the default so forks whose release repo is not
+  # named <owner>/rustdesk-release are still checked correctly.
+  RELEASE_REPO: ${{ vars.RELEASE_REPO || format('{0}/rustdesk-release', github.repository_owner) }}
 
 jobs:
   sync:
@@ -35,6 +41,7 @@ jobs:
         run: |
           UPSTREAM_TAG=$(gh api repos/${UPSTREAM_REPO}/releases/latest --jq '.tag_name')
           echo "Upstream latest release: ${UPSTREAM_TAG}"
+          echo "Release repo being watched: ${RELEASE_REPO}"
           # Our release tags may carry a local suffix (e.g. 1.4.9 -> 1.4.9-1),
           # so match the upstream tag with an optional -N suffix.
           if gh api "repos/${RELEASE_REPO}/releases?per_page=100" --jq '.[].tag_name' | grep -qE "^${UPSTREAM_TAG}(-[0-9]+)?$"; then
@@ -57,10 +64,38 @@ jobs:
           curl -sSL -o /tmp/src.tar.gz "https://github.com/${UPSTREAM_REPO}/archive/refs/tags/${TAG}.tar.gz"
           tar -xzf /tmp/src.tar.gz -C /tmp
           cd "/tmp/${UPSTREAM_REPO#*/}-${TAG}"
-          git apply --check --whitespace=nowarn "${GITHUB_WORKSPACE}/patches/custom-client.patch" && \
-            echo "Patches apply cleanly to ${TAG}."
-        # A failure here means upstream changed the patched code paths.
-        # The issue-creation step below will file a reminder.
+          FAILED=""
+          REJ=""
+          for p in ${GITHUB_WORKSPACE}/patches/*.patch; do
+            NAME=$(basename "$p")
+            if git apply --whitespace=nowarn --check "$p" 2>/tmp/apply-err.txt; then
+              git apply --whitespace=nowarn "$p"
+              echo "${NAME}: ok"
+            else
+              echo "${NAME}: FAILED"
+              sed 's/^/    /' /tmp/apply-err.txt | head -10
+              FAILED="$NAME"
+              # Second pass with --reject collects precisely which hunks broke,
+              # so the issue can say WHICH feature domain needs rebasing.
+              git apply --reject --whitespace=nowarn "$p" >/dev/null 2>&1 || true
+              while IFS= read -r r; do
+                REJ="${REJ}- \`${r#./}\`"$'\n'
+              done < <(find . -name "*.rej" | sort | head -20)
+              [ -n "$REJ" ] || REJ="- (git produced no .rej files; hunk context drifted)"$'\n'
+              break
+            fi
+          done
+          if [ -n "$FAILED" ]; then
+            echo "Patches DO NOT apply cleanly to ${TAG}; first failure: ${FAILED}"
+            exit 1
+          fi
+          echo "All patches apply cleanly to ${TAG}."
+          {
+            echo "failed_patch=${FAILED}"
+            echo "rej_summary<<REJ_EOF"
+            echo "${REJ:-none}"
+            echo "REJ_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Open issue when patches need updating
         if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'failure'
@@ -74,12 +109,18 @@ jobs:
           if [ "$EXISTING" -eq 0 ]; then
             gh issue create --repo "${GITHUB_REPOSITORY}" \
               --title "${TITLE}" \
-              --body "Upstream released [${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}) but \`patches/custom-client.patch\` no longer applies cleanly.
+              --body "Upstream released [${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}) and our patches no longer apply cleanly.
 
-          Fix: rebase the patch on top of the new tag (see README > Maintaining the patch), then commit and re-run this workflow."
+          **First failing patch:** \`${{ steps.validate.outputs.failed_patch }}\`
+
+          **Conflicting hunks (\`git apply --reject\`):**
+          ${{ steps.validate.outputs.rej_summary }}
+
+          Fix: rebase only the listed functional domain(s) on top of the new tag (see README > Maintaining the patches), commit, then re-run this workflow."
           fi
 
       - name: Sync build pins from upstream workflow
+        id: pins
         if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success'
         shell: bash
         env:
@@ -88,15 +129,19 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/flutter-build.yml" -o /tmp/upstream-fb.yml
           curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/bridge.yml" -o /tmp/upstream-bridge.yml
+          WF="${GITHUB_WORKSPACE}/.github/workflows/build-windows.yml"
+          PIN_DIFF=""
           # Map upstream env keys -> our build-windows.yml keys
           sync_pin() {
-            local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3"
-            local VAL
+            local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3" VAL OLD
+            OLD=$(grep -E "^  ${LOCAL_KEY}: " "$WF" | head -n1 | sed 's/^[^:]*:[[:space:]]*//')
             VAL=$(grep -E "^  ${UP_KEY}: " "$SRC" | head -n1 | sed 's/^[^:]*:[[:space:]]*//; s/"//g' | tr -d '\r')
             if [ -n "$VAL" ]; then
-              sed -i "s|^  ${LOCAL_KEY}: .*|  ${LOCAL_KEY}: \"${VAL}\"|" \
-                "${GITHUB_WORKSPACE}/.github/workflows/build-windows.yml"
-              echo "${LOCAL_KEY} -> ${VAL}"
+              sed -i "s|^  ${LOCAL_KEY}: .*|  ${LOCAL_KEY}: \"${VAL}\"|" "$WF"
+              if [ "${OLD//\"/}" != "$VAL" ]; then
+                PIN_DIFF="${PIN_DIFF}- \`${LOCAL_KEY}\`: ${OLD:-<unset>} -> \`${VAL}\`"$'\n'
+              fi
+              echo "${LOCAL_KEY} = ${VAL}"
             else
               echo "::warning::pin ${UP_KEY} not found in ${SRC##*/}"
             fi
@@ -107,22 +152,117 @@ jobs:
           sync_pin LLVM_VERSION          LLVM_VERSION               /tmp/upstream-fb.yml
           sync_pin CARGO_EXPAND_VERSION  CARGO_EXPAND_VERSION       /tmp/upstream-bridge.yml
           sync_pin FLUTTER_RUST_BRIDGE_VERSION FLUTTER_RUST_BRIDGE_VERSION /tmp/upstream-bridge.yml
-          if ! git diff --quiet .github/workflows/build-windows.yml; then
+          if ! git diff --quiet "$WF"; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .github/workflows/build-windows.yml
+            git add "$WF"
             git commit -qm "chore: sync build pins from upstream ${TAG}"
             git push
             echo "Build pins updated and pushed."
           else
             echo "Build pins unchanged."
           fi
+          if [ -n "$PIN_DIFF" ]; then
+            {
+              echo "### Build pins updated for upstream ${TAG}"
+              echo ""
+              echo "$PIN_DIFF"
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "pin_diff<<PIN_EOF"
+              echo "$PIN_DIFF"
+              echo "PIN_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Dispatch build
+      - name: Open review issue when pins jumped
+        # Large toolchain jumps (Rust stable / Flutter major) can compile-fail
+        # even with correct substitution - flag them for human review. The
+        # fast-check gate below remains the runtime safety net.
+        if: steps.pins.outputs.pin_diff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          TITLE="Build pins changed for upstream ${TAG}"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "${TITLE} in:title" --json number --jq 'length')
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --body "The following build pins were replaced from upstream [${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}). If this is a major Rust/Flutter jump, watch the fast-check gate closely.
+
+          ${{ steps.pins.outputs.pin_diff }}"
+          fi
+
+      - name: Fast-check compile gate
+        id: gate
         if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run fast-check.yml --repo "${GITHUB_REPOSITORY}" \
+            --ref "${{ github.ref_name }}" -f tag="$TAG" -f upstream_ref="$TAG"
+          echo "fast-check dispatched at ${T0}, waiting for the run to appear..."
+          RUN_ID=""
+          for i in $(seq 1 12); do
+            sleep 10
+            RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/fast-check.yml/runs" \
+              -F per_page=5 -F created=">=${T0}" \
+              --jq '.workflow_runs | map(select(.head_branch == "${{ github.ref_name }}")) | .[0].id // empty')
+            [ -n "$RUN_ID" ] && break
+          done
+          if [ -z "$RUN_ID" ] ; then
+            echo "::error::fast-check run did not appear"
+            exit 1
+          fi
+          echo "Watching fast-check run ${RUN_ID}"
+          if gh run watch "$RUN_ID" --exit-status --interval 30; then
+            echo "gate_passed=true" >> "$GITHUB_OUTPUT"
+            echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+            echo "Fast-check gate PASSED."
+          else
+            echo "gate_passed=false" >> "$GITHUB_OUTPUT"
+            echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+            # Extract a readable error excerpt for the issue body.
+            gh run view "$RUN_ID" --log-failed > /tmp/gate.log 2>/dev/null || \
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/logs" > /tmp/gate.zip || true
+            EXCERPT=$(sed 's/\x1b\[[0-9;]*m//g' /tmp/gate.log 2>/dev/null | \
+              grep -E "error(\[E[0-9]+\])?:|Patch failed|panicked|##\[error\]" | head -15 || true)
+            echo "excerpt<<X_EOF" >> "$GITHUB_OUTPUT"
+            echo "${EXCERPT:-"(no excerpt extracted; inspect the run)"}" >> "$GITHUB_OUTPUT"
+            echo "X_EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open issue when fast-check gate fails
+        if: steps.gate.outputs.gate_passed == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          TITLE="Compile gate failed for upstream ${TAG}"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "${TITLE} in:title" --json number --jq 'length')
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --body "Patches apply to upstream [${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}) but the Windows compile gate failed - full build was NOT dispatched.
+
+          Gate run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.gate.outputs.run_id }}
+
+          \`\`\`
+          ${{ steps.gate.outputs.excerpt }}
+          \`\`\`"
+          fi
+
+      - name: Dispatch build
+        if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success' && steps.gate.outputs.gate_passed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" -f tag="${{ steps.check.outputs.tag }}"
-          echo "Build dispatched for ${{ steps.check.outputs.tag }}."
+          echo "Build dispatched for ${{ steps.check.outputs.tag }} (compile gate passed)."
