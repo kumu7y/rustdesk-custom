@@ -74,7 +74,8 @@ jobs:
           sudo apt-get install -y clang cmake curl g++ git libpam0g-dev \
             libasound2-dev libunwind-dev libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev \
-            libva-dev libvdpau-dev libxcb-randr0-dev libclang-dev nasm
+            libva-dev libvdpau-dev libxcb-randr0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxdo-dev libxfixes-dev nasm wget
 
       - name: Show generated module structure
         shell: bash
