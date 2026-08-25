@@ -129,22 +129,29 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/flutter-build.yml" -o /tmp/upstream-fb.yml
           curl -sSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${TAG}/.github/workflows/bridge.yml" -o /tmp/upstream-bridge.yml
-          WF="${GITHUB_WORKSPACE}/.github/workflows/build-windows.yml"
+          # Pins live in BOTH build-windows.yml and fast-check.yml; keeping the
+          # gate on stale toolchain versions would produce false greens.
+          WFS=("${GITHUB_WORKSPACE}/.github/workflows/build-windows.yml" \
+               "${GITHUB_WORKSPACE}/.github/workflows/fast-check.yml")
           PIN_DIFF=""
-          # Map upstream env keys -> our build-windows.yml keys
+          # Map upstream env keys -> our local keys
           sync_pin() {
-            local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3" VAL OLD
-            OLD=$(grep -E "^  ${LOCAL_KEY}: " "$WF" | head -n1 | sed 's/^[^:]*:[[:space:]]*//')
+            local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3" WF VAL OLD
             VAL=$(grep -E "^  ${UP_KEY}: " "$SRC" | head -n1 | sed 's/^[^:]*:[[:space:]]*//; s/"//g' | tr -d '\r')
-            if [ -n "$VAL" ]; then
+            if [ -z "$VAL" ]; then
+              echo "::warning::pin ${UP_KEY} not found in ${SRC##*/}"
+              return
+            fi
+            for WF in "${WFS[@]}"; do
+              # Keys that only exist in one workflow are skipped silently.
+              grep -qE "^  ${LOCAL_KEY}: " "$WF" || continue
+              OLD=$(grep -E "^  ${LOCAL_KEY}: " "$WF" | head -n1 | sed 's/^[^:]*:[[:space:]]*//')
               sed -i "s|^  ${LOCAL_KEY}: .*|  ${LOCAL_KEY}: \"${VAL}\"|" "$WF"
               if [ "${OLD//\"/}" != "$VAL" ]; then
-                PIN_DIFF="${PIN_DIFF}- \`${LOCAL_KEY}\`: ${OLD:-<unset>} -> \`${VAL}\`"$'\n'
+                PIN_DIFF="${PIN_DIFF}- \`${LOCAL_KEY}\` (${WF##*/}): ${OLD:-<unset>} -> \`${VAL}\`"$'\n'
               fi
-              echo "${LOCAL_KEY} = ${VAL}"
-            else
-              echo "::warning::pin ${UP_KEY} not found in ${SRC##*/}"
-            fi
+            done
+            echo "${LOCAL_KEY} = ${VAL}"
           }
           sync_pin SCITER_RUST_VERSION   RUST_VERSION               /tmp/upstream-fb.yml
           sync_pin FLUTTER_VERSION       FLUTTER_VERSION            /tmp/upstream-fb.yml
@@ -152,10 +159,10 @@ jobs:
           sync_pin LLVM_VERSION          LLVM_VERSION               /tmp/upstream-fb.yml
           sync_pin CARGO_EXPAND_VERSION  CARGO_EXPAND_VERSION       /tmp/upstream-bridge.yml
           sync_pin FLUTTER_RUST_BRIDGE_VERSION FLUTTER_RUST_BRIDGE_VERSION /tmp/upstream-bridge.yml
-          if ! git diff --quiet "$WF"; then
+          if ! git diff --quiet .github/workflows/build-windows.yml .github/workflows/fast-check.yml; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add "$WF"
+            git add .github/workflows/build-windows.yml .github/workflows/fast-check.yml
             git commit -qm "chore: sync build pins from upstream ${TAG}"
             git push
             echo "Build pins updated and pushed."

@@ -64,7 +64,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 之后全自动：上游发新版 → 凌晨自动同步依赖并重建 → 所有已装设备收到更新提示。
 
-## Secrets 参考
+## Secrets 与 Variables 参考
 
 | Secret | 必填 | 示例 | 说明 |
 |---|---|---|---|
@@ -75,6 +75,10 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `RD_PRESET_PASSWORD` | ➖ | 任意明文 | 内置无人值守密码。构建时计算加盐哈希后嵌入，**明文不会出现在代码、日志或产物之外的任何位置**。不配则不内置密码 |
 | `RD_RELEASE_REPO` | ✅* | `you/rustdesk-release` | 更新检查指向的发布仓（`owner/repo`）。*不配置则该客户端禁用自动更新（避免误指他人仓库）|
 | `RELEASE_PAT` | ✅ | fine-grained token | 跨仓库发布用的 Personal Access Token |
+
+| Variable | 必填 | 示例 | 说明 |
+|---|---|---|---|
+| `RELEASE_REPO` | ➖ | `you/rustdesk-release` | 每日同步检测新版时查询的发布仓。缺省按 `<你的用户名>/rustdesk-release` 推断；发布仓名不同则必须配置，否则会重复派发构建 |
 
 > 未提供任何 `RD_*` 服务器类 Secret 时，产物为「纯行为增强版」：仅包含 UI 行为补丁，不注入任何服务器信息。
 
@@ -142,10 +146,21 @@ git add -A && git diff --cached > patches/0NN-<name>.patch
 
 ## 安全与合规声明
 
+- 本仓库的行为补丁基于上游 RustDesk（AGPL-3.0）修改，按同许可开源，见 [LICENSE](LICENSE)；本管线的脚本与工作流同样以 AGPL-3.0 发布
 - 本管线产出的安装包**未经代码签名**，首次安装 SmartScreen 会提示"仍要运行"
 - 安装包二进制内必然包含连接所需的服务器信息（可被逆向提取）——这是远程客户端的工作原理所限；Secrets 只保护源码仓库与构建日志
 - 内置密码 = 无人值守访问凭证，请仅部署在你有权管理的设备上；泄露后需发新版本轮换
 - 上游项目采用 AGPL-3.0 许可，二次分发请遵守相应条款并保留版权声明
+
+## 依赖与版本更新策略
+
+| 依赖 | 更新方式 |
+|---|---|
+| Rust / Flutter / LLVM / vcpkg / cargo-expand / flutter_rust_bridge | 每日 sync 自动从上游 workflow 抓取并同步到 `build-windows.yml` **和** `fast-check.yml`（保持门禁与真构建工具链一致）；任何实际变更会写入运行摘要并自动开复核 Issue |
+| `BRIDGE_FLUTTER_VERSION`（bridge 生成专用）、`TOPMOST_COMMIT_ID` | 无上游对应源，手动维护；上游大版本升级后若 bridge 代码生成失败再调整 |
+| vcpkg 包清单 | 随上游源码树自带（检出的 tag 内 `vcpkg.json`），无需维护 |
+| Flutter engine 定制版 | 固定拉取 `rustdesk/engine` 的 main 构建产物，随上游自动跟进 |
+| 上游源码版本 | 每日 sync 检测新版 → 补丁校验 → fast 门禁 → 自动重建发布 |
 
 ## 成本
 
