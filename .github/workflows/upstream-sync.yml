@@ -1,0 +1,89 @@
+name: Upstream Sync
+
+# Daily check: when rustdesk upstream publishes a new release, validate our
+# patches against it and dispatch a build. The resulting artifacts are
+# published to the public releases repo by build-windows.yml.
+
+on:
+  schedule:
+    - cron: "0 21 * * *" # UTC 21:00 = Beijing 05:00
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+env:
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  RELEASE_REPO: "kumu7y/rustdesk-release"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream latest release
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          UPSTREAM_TAG=$(gh api repos/${UPSTREAM_REPO}/releases/latest --jq '.tag_name')
+          echo "Upstream latest release: ${UPSTREAM_TAG}"
+          # Our release tags may carry a local suffix (e.g. 1.4.9 -> 1.4.9-1),
+          # so match the upstream tag with an optional -N suffix.
+          if gh api "repos/${RELEASE_REPO}/releases?per_page=100" --jq '.[].tag_name' | grep -qE "^${UPSTREAM_TAG}(-[0-9]+)?$"; then
+            echo "Release ${UPSTREAM_TAG} already published, nothing to do."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release ${UPSTREAM_TAG} is missing, a build is needed."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate patches against upstream tag
+        id: validate
+        if: steps.check.outputs.should_build == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          curl -sSL -o /tmp/src.tar.gz "https://github.com/${UPSTREAM_REPO}/archive/refs/tags/${TAG}.tar.gz"
+          tar -xzf /tmp/src.tar.gz -C /tmp
+          cd "/tmp/${UPSTREAM_REPO#*/}-${TAG}"
+          git apply --check --whitespace=nowarn "${GITHUB_WORKSPACE}/patches/custom-client.patch" && \
+            echo "Patches apply cleanly to ${TAG}."
+        # A failure here means upstream changed the patched code paths.
+        # The issue-creation step below will file a reminder.
+
+      - name: Open issue when patches need updating
+        if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          TITLE="Patch validation failed for upstream ${TAG}"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "${TITLE} in:title" --json number --jq 'length')
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --body "Upstream released [${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}) but \`patches/custom-client.patch\` no longer applies cleanly.
+
+          Fix: rebase the patch on top of the new tag (see README > Maintaining the patch), then commit and re-run this workflow."
+          fi
+
+      - name: Dispatch build
+        if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" -f tag="${{ steps.check.outputs.tag }}"
+          echo "Build dispatched for ${{ steps.check.outputs.tag }}."
