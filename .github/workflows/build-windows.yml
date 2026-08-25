@@ -297,8 +297,8 @@ jobs:
           $sha = (Get-FileHash src/embedded_config.rs -Algorithm SHA256).Hash.Substring(0,16)
           Write-Host "embedded_config.rs regenerated, lines: $lc, sha256: $sha"
           Write-Host "--- first lines of generated module ---"
-          Get-Content src/embedded_config.rs -TotalCount 14 | ForEach-Object { Write-Host $_ }
-          Write-Host "--- end preview ---"
+          Get-Content src/embedded_config.rs | ForEach-Object { Write-Host $_ }
+          Write-Host "--- end of generated module ---"
           python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
