@@ -1,67 +1,142 @@
-# rustdesk-custom
+# RustDesk 定制客户端自动构建管线
 
-RustDesk 定制客户端构建管线（源码私有，Releases 公开）。
+一套基于 GitHub Actions 的 RustDesk 自定义客户端流水线：**跟随上游版本自动打补丁、编译、发布**，产物为内嵌自建服务器配置的 Windows 安装包，支持无人值守静默访问、三种认证方式并存、自动更新。
 
-- **本仓库（私有）**：补丁 + CI 工作流
-- **[kumu7y/rustdesk-release](https://github.com/kumu7y/rustdesk-release)（公开）**：安装包 Releases
+> 本仓库为通用模板 —— Fork 后填入你自己的服务器信息（Secrets），即可产出属于你的定制客户端，无需改动任何代码。
 
-## 它做什么
+## 架构
 
-1. `upstream-sync.yml` 每日检查 [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk) 最新 Release
-2. 发现新版本 → 校验 `patches/custom-client.patch` 能否干净应用 → 触发 `build-windows.yml`
-3. 构建基于上游对应 tag 的源码 + 我们的补丁 → Windows x64 安装包（exe 自解压版 + msi）
-4. 构建产物自动发布到公开仓库 `kumu7y/rustdesk-release`
-5. 已安装的定制客户端每日检查该仓库的 `releases/latest`，发现新版后弹窗提示，用户点击下载并静默升级
-
-## 补丁内容（patches/custom-client.patch）
-
-| 文件 | 改动 |
-|---|---|
-| `src/embedded_config.rs`（新增） | 服务器配置 XOR 混淆 + 强制覆盖层注入；内置 UI 隐藏开关（hide-network-settings 等）；内置密码哈希；更新检查指向的发布仓库名 |
-| `src/lib.rs` | 注册新模块 |
-| `src/core_main.rs` | 启动时注入服务器配置 |
-| `src/common.rs` | 软件更新检查改为查询 `api.github.com/repos/kumu7y/rustdesk-release/releases/latest` |
-
-> 注：混淆仅防随手扫描（`strings` 等），安装包公开分发决定了连接信息必然存在于二进制内，决心逆向者仍可提取。
-
-## 首次使用（必做）
-
-发布步骤需要一个跨仓库 Personal Access Token：
-
-1. GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token
-   - Repository access: *Only select repositories* → 选 `rustdesk-release`
-   - Permissions: **Contents: Read and write**
-2. 本仓库 → Settings → Secrets and variables → Actions → New repository secret
-   - Name: `RELEASE_PAT`，Value: 上一步的 token
-
-没有这个 Secret 时，构建会成功但发布步骤报错提醒。
-
-## 手动触发一次构建
-
-Actions → Build Windows Custom Client → Run workflow → 输入 tag（如 `1.4.9`）。
-
-或直接触发同步检查：Actions → Upstream Sync → Run workflow。
-
-## 维护补丁
-
-上游改动触及补丁覆盖的代码路径时，`Upstream Sync` 会开 issue 提醒。重新生成补丁：
-
-```bash
-# 1. 解压上游对应 tag 源码到 A/ 与 B/ 两份目录
-# 2. 在 B/ 中修改文件（参考下表）
-# 3. 生成补丁：
-cd A && git init -q && git add -A && git -c user.name=p -c user.email=p@l commit -qm base
-cp B/src/*.rs 修改过的文件 → A/src/
-cd A && git add -A && git diff --cached > patches/custom-client.patch
-# 4. 验证：在全新解压的上游树中 git apply --check patches/custom-client.patch
+```
+上游 rustdesk/rustdesk 发新版本
+        │ 每日定时检测 (upstream-sync.yml)
+        ▼
+校验补丁可应用 ──失败──▶ 自动开 Issue 提醒人工修补
+        │ 通过                │
+        ▼                     ▼
+同步上游构建依赖 pin       （不派发，避免浪费）
+        ▼
+build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补丁
+        │            → 由 Secrets 生成 embedded_config.rs → 编译打包
+        ▼
+发布到你自己的公开发布仓（Release 标题显示为官方样式版本号）
+        ▼
+已部署的客户端每日检查 → 弹窗提示 → 一键升级
 ```
 
-## 成本（私有仓库 Actions 分钟数）
+## 功能特性
 
-Windows runner 按 2 倍计费。单次全流程约 150–190 计费分钟；免费额度 2000 分钟/月，足够支撑上游每月 1–2 次发版 + 重试。
+**客户端行为补丁**（对所有复用者通用）：
 
-## 注意事项
+- 被控端连接管理窗口无人值守隐藏：任务栏零痕迹，会话静默建立
+- 有需要确认的事件（点击授权、UAC 提权、文件确认等）时面板自动唤回；处理完点 X 隐藏面板但**不断开连接**
+- 隐藏网络设置页（服务器/代理/WebSocket 配置对最终用户不可见不可改）
+- 更新日志链接自动指向上游官方对应版本的 Release 页面
+- 软件更新检查指向你自己的发布仓库
 
-- 构建产物**未做代码签名**，首次安装时 SmartScreen 会提示"更多信息 → 仍要运行"
-- 公开仓库中的安装包含内嵌的服务器域名与**公钥**（泄露无害），但请勿把私钥类信息放进补丁
-- 客户端"检查更新"依赖 GitHub 网络可达性；如日后需要迁移到自托管更新端点，只需修改 `embedded_config.rs` 中常量并重新生成补丁
+**由 Secrets 决定的个性化注入**：
+
+- 内嵌 ID/中继/API 服务器地址与连接公钥（XOR 混淆存储于二进制）
+- 内置无人值守固定密码（构建时现算加盐哈希，明文不出现在任何地方）
+- 全部以锁定层写入：最终用户在界面中不可见、不可改
+
+## 快速开始（约 10 分钟）
+
+1. **Fork 或使用本仓库模板**创建你自己的仓库（建议设为 Public，Actions 免费不限量）
+2. **准备一个公开发布仓**：新建空仓库 `<你的用户名>/rustdesk-release`（用于存放安装包 Release）
+3. **配置 Secrets**（Settings → Secrets and variables → Actions）：见下方参考表
+4. **配置跨仓发布令牌 `RELEASE_PAT`**：
+   - GitHub → Settings → Developer settings → Fine-grained tokens → Generate
+   - 仅勾选你的 `rustdesk-release` 仓库，权限 Contents: Read and write
+   - 存为本仓库 Secret `RELEASE_PAT`
+5. **手动触发首次构建**：Actions → Build Windows Custom Client → Run workflow
+   - `tag`：上游版本号（如 `1.4.9`）；也可带本地后缀（如 `1.4.9-1`）
+   - `upstream_ref`：留空则同 tag；若 tag 带后缀则需填上游真实 tag
+6. 构建完成后安装包出现在 `https://github.com/<你>/rustdesk-release/releases/tag/<tag>`
+7. 在目标机器安装即可：服务器配置已内置、无需任何设置
+
+之后全自动：上游发新版 → 凌晨自动同步依赖并重建 → 所有已装设备收到更新提示。
+
+## Secrets 参考
+
+| Secret | 必填 | 示例 | 说明 |
+|---|---|---|---|
+| `RD_ID_SERVER` | ✅ | `hbbs.example.com:21116` | ID 服务器（hbbs）|
+| `RD_KEY` | ✅ | `tyW5Z...=` | 服务器 Ed25519 公钥（服务端 `id_ed25519.pub` 文件内容）|
+| `RD_RELAY_SERVER` | ➖ | `hbbs.example.com:21117` | 中继服务器（hbbr），缺省自动推导 |
+| `RD_API_SERVER` | ➖ | `https://hbbs.example.com:8888` | API 服务器（登录/地址簿），无则留空 |
+| `RD_PRESET_PASSWORD` | ➖ | 任意明文 | 内置无人值守密码。构建时计算加盐哈希后嵌入，**明文不会出现在代码、日志或产物之外的任何位置**。不配则不内置密码 |
+| `RD_RELEASE_REPO` | ✅* | `you/rustdesk-release` | 更新检查指向的发布仓（`owner/repo`）。*不配置则该客户端禁用自动更新（避免误指他人仓库）|
+| `RELEASE_PAT` | ✅ | fine-grained token | 跨仓库发布用的 Personal Access Token |
+
+> 未提供任何 `RD_*` 服务器类 Secret 时，产物为「纯行为增强版」：仅包含 UI 行为补丁，不注入任何服务器信息。
+
+## 三种访问模式（可并存）
+
+| 连入方式 | 被控端表现 |
+|---|---|
+| 内置固定密码 | 静默直连，被控机无任何窗口、任务栏零痕迹 |
+| 临时随机密码（安全页查看/重置） | 同上，静默直连 |
+| 无密码访客 | 隐藏的确认面板自动弹回前台请求授权；接受后正常控制；点 X 隐藏面板但会话保持 |
+
+## 自动更新机制
+
+- 客户端每日检查 `https://api.github.com/repos/<你>/rustdesk-release/releases/latest`
+- 发现更高版本号 → 主界面弹出更新卡片，"Changelog" 链接指向上游官方对应版本的 Release 页
+- 点击 Update → 从你的发布仓下载安装包 → 静默升级
+- 版本号规则：tag 即完整版本号（CI 会写入程序内部版本）。上游小版本迭代建议加 `-N` 本地序号（如 `1.4.9-3`），上游大版本直接用其版本号（如 `1.5.0`）
+
+## 工作流说明
+
+| 工作流 | 触发 | 职责 |
+|---|---|---|
+| `upstream-sync.yml` | 每日 UTC 21:00 + 手动 | 检测上游新版 → 校验补丁 → 自动同步构建依赖 pin → 派发构建；补丁失效时自动开 Issue |
+| `build-windows.yml` | sync 派发 / 手动 | 完整构建 + 跨仓发布；任一环节失败自动开 Issue |
+| `alert` job | 上述任一作业失败 | 创建防重的失败告警 Issue |
+
+## 故障排查（Troubleshooting）
+
+| 症状 | 原因 | 处置 |
+|---|---|---|
+| `Apply custom client patches` 失败 | 上游改动触及补丁区域，sync 已自动开 Issue | 按 Issue 指引：解压上游新 tag 源码 → 重新调整补丁覆盖的文件 → 重新生成 patch（方法见下节）|
+| `Build rustdesk` 编译失败 | 上游升级了 Flutter/Rust/vcpkg 且自动 pin 同步未完全覆盖 | 对照上游 `flutter-build.yml@<tag>` 的 env 与步骤 diff，手工修正 build-windows.yml |
+| `Publish release` 报 RELEASE_PAT | 令牌过期或未配置 | 重新生成并更新 Secret，然后 Re-run failed jobs |
+| 客户端从不提示更新 | `RD_RELEASE_REPO` 未配置或拼写错误 | 检查 Secret；确认发布仓存在对应 tag 的 Release |
+| 授权框不弹出 | 确认面板唤回逻辑失效 | 检查 `main.dart` showCmWindow 是否含 `windowManager.show()`、`server_model.dart` 三处 `!client.authorized` 条件 |
+
+## 补丁维护（上游变更后如何重新打补丁）
+
+补丁文件 `patches/custom-client.patch` 覆盖以下行为（不含任何个人信息，可安全公开）：
+
+| 文件 | 内容 |
+|---|---|
+| `src/lib.rs` / `src/core_main.rs` | 注册并在启动时调用配置注入模块 |
+| `src/common.rs` | 更新检查重定向到你的发布仓 |
+| `src/ipc.rs` | 无人值守模式下允许隐藏连接管理窗口 |
+| `flutter/lib/common.dart` | 确认对话框触发时自动唤回隐藏的面板 |
+| `flutter/lib/desktop/pages/server_page.dart` | 点 X 关闭面板不断开会话 |
+| `flutter/lib/desktop/pages/main.dart`（经 server_model 联动）| 从隐藏态恢复可见性 |
+| `flutter/lib/models/server_model.dart` | 未授权访客强制唤回面板 |
+| `flutter/lib/desktop/pages/desktop_home_page.dart` | Changelog 链接剥离本地后缀 |
+
+重新生成流程：
+
+```bash
+# A=纯净上游源码树, B=A+修改后的源码树
+cd A && git init -q && git add -A && git commit -qm base
+cp B/<修改过的文件> 对应路径/
+git add -A && git diff --cached > patches/custom-client.patch
+# 验证：在全新解压的上游树执行 git apply --check
+```
+
+`scripts/gen_embedded_config.py` 负责 `src/embedded_config.rs`（该文件不在补丁中，由 CI 按你的 Secrets 生成）。
+
+## 安全与合规声明
+
+- 本管线产出的安装包**未经代码签名**，首次安装 SmartScreen 会提示"仍要运行"
+- 安装包二进制内必然包含连接所需的服务器信息（可被逆向提取）——这是远程客户端的工作原理所限；Secrets 只保护源码仓库与构建日志
+- 内置密码 = 无人值守访问凭证，请仅部署在你有权管理的设备上；泄露后需发新版本轮换
+- 上游项目采用 AGPL-3.0 许可，二次分发请遵守相应条款并保留版权声明
+
+## 成本
+
+Public 仓库 Actions 免费无限。本模板按 Public 使用设计；若保持 Private，Windows 作业按 2× 计费率消耗额度（单次全流程约 150–190 分钟）。
