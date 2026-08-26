@@ -19,6 +19,10 @@ Environment variables (all optional - omitting everything produces a
                        build - releases live in the same repo)
   RD_HIDE_NETWORK_UI   hide the whole Network settings tab   (default: true)
   RD_ALLOW_HIDE_CM     enable hiding the CM window            (default: true)
+  RD_WEBSOCKET_ID      full ws:// or wss:// address (with port/path) used as
+                       the ID server while the client's "Use WebSocket"
+                       switch is ON; bypasses upstream port rewriting
+  RD_WEBSOCKET_RELAY   same idea for the relay server (optional)
 
 Usage: gen_embedded_config.py [output-path]   (default: src/embedded_config.rs)
 """
@@ -63,6 +67,9 @@ def main() -> int:
     key = env("RD_KEY")
     preset_password = env("RD_PRESET_PASSWORD")
 
+    ws_id_server = env("RD_WEBSOCKET_ID")
+    ws_relay_server = env("RD_WEBSOCKET_RELAY")
+
     # Update-check target: explicit secret wins; otherwise the repository
     # running this build (releases are published to the same repo).
     release_repo = env("RD_RELEASE_REPO") or env("GITHUB_REPOSITORY")
@@ -72,11 +79,16 @@ def main() -> int:
 
     # --- locked server options --------------------------------------------
     entries = []
+    n_ws = 0
     for k, v in (("custom-rendezvous-server", id_server),
                  ("relay-server", relay_server),
                  ("api-server", api_server),
-                 ("key", key)):
+                 ("key", key),
+                 ("custom-rendezvous-server-ws", ws_id_server),
+                 ("relay-server-ws", ws_relay_server)):
         if v:
+            if k.endswith("-ws"):
+                n_ws += 1
             entries.append(f'    (\n        "{k}",\n        {xor_arr(v)},\n    ),')
     if entries:
         server_section = (
@@ -186,7 +198,7 @@ pub fn init() {{
     if re.search(r",\s*,", module):
         raise SystemExit("BUG: generated code contains doubled commas - aborting")
     print(f"generated {out_path} "
-          f"(server_entries={len(entries)}, hide_ui={hide_network_ui}, "
+          f"(server_entries={len(entries)}, ws_entries={n_ws}, hide_ui={hide_network_ui}, "
           f"allow_hide_cm={allow_hide_cm}, preset_password={bool(preset_password)}, "
           f"release_repo='{release_repo}')")
     return 0

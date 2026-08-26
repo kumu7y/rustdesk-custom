@@ -143,6 +143,8 @@ jobs:
       RD_KEY: ${{ secrets.RD_KEY }}
       RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
       RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
+      RD_WEBSOCKET_ID: ${{ secrets.RD_WEBSOCKET_ID }}
+      RD_WEBSOCKET_RELAY: ${{ secrets.RD_WEBSOCKET_RELAY }}
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v7
@@ -162,6 +164,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: pipeline
+
+      - name: Normalize line endings of patched files
+        shell: bash
+        run: |
+          # Patch hunks are LF-based; guarantee byte-exact context even for
+          # trees without .gitattributes (hbb_common submodule).
+          FILES="src/lib.rs src/core_main.rs src/common.rs src/ipc.rs \
+            flutter/lib/common.dart flutter/lib/models/server_model.dart \
+            flutter/lib/desktop/pages/server_page.dart \
+            flutter/lib/desktop/pages/desktop_home_page.dart \
+            flutter/lib/main.dart flutter/lib/mobile/widgets/dialog.dart \
+            libs/hbb_common/src/websocket.rs"
+          for f in $FILES; do [ -f "$f" ] && sed -i 's/\r$//' "$f" || true; done
 
       - name: Apply custom client patches
         shell: bash

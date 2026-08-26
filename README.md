@@ -68,6 +68,8 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `RD_API_SERVER` | ➖ | `https://hbbs.example.com:8888` | API 服务器（登录/地址簿），无则留空 |
 | `RD_PRESET_PASSWORD` | ➖ | 任意明文 | 内置无人值守密码。构建时计算加盐哈希后嵌入，**明文不会出现在代码、日志或产物之外的任何位置**。不配则不内置密码 |
 | `RD_RELEASE_REPO` | ✅* | `you/rustdesk-custom` | 更新检查指向的发布仓（`owner/repo`）。*不配置时默认为本仓库；显式配置则覆盖默认 |
+| `RD_WEBSOCKET_ID` | ➖ | `wss://hbbs.example.com:8443` | WebSocket 模式下的 ID 服务器**完整地址**（含端口/路径）。设置页"Use WebSocket"开关打开时启用，自定义端口不会被上游改写成 443。不配则 WS 开关退回上游默认行为 |
+| `RD_WEBSOCKET_RELAY` | ➖ | `wss://hbbs.example.com:8444` | 同上，中继服务器的 ws 完整地址。不配则中继不随 WS 切换 |
 | `RELEASE_PAT` | ➖ | fine-grained token | **仅当**用变量 `RELEASE_REPO` 把安装包发到另一个仓库时需要（该仓 Contents:read/write）。发本仓库无需此令牌 |
 
 | Variable | 必填 | 示例 | 说明 |
@@ -75,6 +77,15 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `RELEASE_REPO` | ➖ | `you/separate-releases` | 安装包发布目标仓，同时是每日同步检测"新版是否已发过"的依据。缺省=本仓库；仅当你要发布到别的仓库时才配置 |
 
 > 未提供任何 `RD_*` 服务器类 Secret 时，产物为「纯行为增强版」：仅包含 UI 行为补丁，不注入任何服务器信息。
+
+## WebSocket 模式
+
+上游在启用 WebSocket 后会把普通域名地址改写为 `wss://域名/ws/id`（隐式 443 端口），自定义端口会丢失。本管线提供两种配合方式：
+
+- **预置 ws 完整地址**（推荐）：配置 `RD_WEBSOCKET_ID` / `RD_WEBSOCKET_RELAY`。客户端设置页打开"Use WebSocket"后，连接自动使用你预置的完整 `ws://`/`wss://` 地址（端口与路径原样保留）；关闭开关则恢复 TCP `host:port` 直连。地址同样经 XOR 混淆注入、界面只读
+- **不配置任何 WS Secret**：开关行为与上游一致（域名走 443 + `/ws/id` 路径，IP 走端口 +2 规则）
+
+> 服务端需自行保证 ws/wss 端点可用；`wss` 证书需被客户端系统信任。
 
 ## 三种访问模式（可并存）
 
@@ -123,8 +134,12 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `040-cm-recall.patch` | `flutter/lib/common.dart`、`models/server_model.dart`：确认事件自动唤回隐藏面板、未授权访客强制唤回 |
 | `050-ui-lock.patch` | `flutter/lib/desktop/pages/server_page.dart`、`main.dart`：点 X 关闭面板不断开、隐藏态恢复可见性 |
 | `060-changelog-link.patch` | `flutter/lib/desktop/pages/desktop_home_page.dart`：Changelog 链接剥离本地后缀 |
+| `070-ws-address.patch` | `libs/hbb_common/src/websocket.rs`：WS 模式下优先使用预置的完整 ws 地址（`custom-rendezvous-server-ws` / `relay-server-ws`），自定义端口不被改写 |
+| `080-mask-injected-fields.patch` | `flutter/lib/mobile/widgets/dialog.dart`：服务器弹窗中被注入（锁定）的字段显示为 ●● 只读，保存时提交有效值避免校验误报 |
 
 > `src/embedded_config.rs` 不属于任何补丁——它由 CI 按 Secrets 用 `scripts/gen_embedded_config.py` 在每次构建前生成。
+>
+> 网络设置页可见性由 `RD_HIDE_NETWORK_UI` 控制（默认隐藏）。设为 `false` 时页面可见："Use WebSocket" 开关可正常切换；ID/Relay/API/Key 四个字段即使打开也只显示 ●●●●●●●● 且不可编辑。
 
 重新生成某个编号补片的流程（只动受影响的功能域）：
 

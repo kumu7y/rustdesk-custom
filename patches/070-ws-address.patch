@@ -1,0 +1,60 @@
+diff --git a/libs/hbb_common/src/websocket.rs b/libs/hbb_common/src/websocket.rs
+index 7bf2108..0dccd83 100644
+--- a/libs/hbb_common/src/websocket.rs
++++ b/libs/hbb_common/src/websocket.rs
+@@ -326,6 +326,27 @@ pub fn is_ws_endpoint(endpoint: &str) -> bool {
+     endpoint.starts_with("ws://") || endpoint.starts_with("wss://")
+ }
+ 
++// Custom client: return `ws_form` when `endpoint` points at the same host
++// as the plain-form server address `plain`. Full ws:// or wss:// URLs keep
++// their custom ports and paths instead of being rewritten to /ws/<path>.
++fn ws_override(endpoint: &str, plain: &str, ws_form: &str) -> Option<String> {
++    if ws_form.is_empty() || plain.is_empty() || endpoint.is_empty() {
++        return None;
++    }
++    if is_ws_endpoint(endpoint) {
++        return None;
++    }
++    let ep_host = split_host_port(endpoint).map(|(h, _)| h)?;
++    let plain_host = split_host_port(plain)
++        .map(|(h, _)| h)
++        .unwrap_or_else(|| plain.to_string());
++    if ep_host == plain_host {
++        Some(ws_form.to_string())
++    } else {
++        None
++    }
++}
++
+ /**
+  * Core function to convert an endpoint to WebSocket format
+  *
+@@ -350,6 +371,27 @@ pub fn check_ws(endpoint: &str) -> String {
+         return endpoint.to_string();
+     }
+ 
++
++    // Custom client: locked "-ws" options carry full ws-form addresses for
++    // the injected ID/relay servers; prefer them verbatim over port
++    // arithmetic so custom ports survive websocket mode.
++    let plain_id = Config::get_rendezvous_server();
++    if let Some(ws) = ws_override(
++        endpoint,
++        &plain_id,
++        &Config::get_option("custom-rendezvous-server-ws"),
++    ) {
++        return ws;
++    }
++    let plain_relay = Config::get_option(OPTION_RELAY_SERVER);
++    if let Some(ws) = ws_override(
++        endpoint,
++        &plain_relay,
++        &Config::get_option("relay-server-ws"),
++    ) {
++        return ws;
++    }
++
+     let Some((endpoint_host, endpoint_port)) = split_host_port(endpoint) else {
+         debug_assert!(false, "endpoint doesn't have port");
+         return endpoint.to_string();

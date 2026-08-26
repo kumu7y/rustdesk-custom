@@ -1,0 +1,91 @@
+diff --git a/flutter/lib/mobile/widgets/dialog.dart b/flutter/lib/mobile/widgets/dialog.dart
+index f1ff855..d7b196f 100644
+--- a/flutter/lib/mobile/widgets/dialog.dart
++++ b/flutter/lib/mobile/widgets/dialog.dart
+@@ -75,6 +75,24 @@ void showServerSettingsWithValue(
+   final apiCtrl = TextEditingController(text: serverConfig.apiServer);
+   final keyCtrl = TextEditingController(text: serverConfig.key);
+ 
++  // Custom client: injected server options are fixed on the Rust side
++  // (OVERWRITE_SETTINGS). Show them as read-only dots so end users can
++  // neither read nor edit the real values.
++  final fieldLocked = <TextEditingController, bool>{
++    idCtrl: serverConfig.idServer.isNotEmpty &&
++        isOptionFixed('custom-rendezvous-server'),
++    relayCtrl:
++        serverConfig.relayServer.isNotEmpty && isOptionFixed('relay-server'),
++    apiCtrl:
++        serverConfig.apiServer.isNotEmpty && isOptionFixed('api-server'),
++    keyCtrl: serverConfig.key.isNotEmpty && isOptionFixed('key'),
++  };
++  for (final c in fieldLocked.keys) {
++    if (fieldLocked[c] == true) {
++      c.text = '********';
++    }
++  }
++
+   RxString idServerMsg = ''.obs;
+   RxString relayServerMsg = ''.obs;
+   RxString apiServerMsg = ''.obs;
+@@ -91,14 +109,20 @@ void showServerSettingsWithValue(
+       setState(() {
+         isInProgress = true;
+       });
++      // Custom client: for locked fields submit the current effective
++      // value so validation passes without leaking the mask; upstream
++      // set_option discards writes to them anyway.
++      val(TextEditingController c, String key) async => fieldLocked[c] == true
++          ? await bind.mainGetOption(key: key)
++          : c.text.trim();
+       bool ret = await setServerConfig(
+           null,
+           errMsgs,
+           ServerConfig(
+-              idServer: idCtrl.text.trim(),
+-              relayServer: relayCtrl.text.trim(),
+-              apiServer: apiCtrl.text.trim(),
+-              key: keyCtrl.text.trim()));
++              idServer: await val(idCtrl, 'custom-rendezvous-server'),
++              relayServer: await val(relayCtrl, 'relay-server'),
++              apiServer: await val(apiCtrl, 'api-server'),
++              key: await val(keyCtrl, 'key')));
+       setState(() {
+         isInProgress = false;
+       });
+@@ -108,6 +132,7 @@ void showServerSettingsWithValue(
+     Widget buildField(
+         String label, TextEditingController controller, String errorMsg,
+         {String? Function(String?)? validator, bool autofocus = false}) {
++      final lockedField = fieldLocked[controller] == true;
+       if (isDesktop || isWeb) {
+         return Row(
+           children: [
+@@ -126,6 +151,7 @@ void showServerSettingsWithValue(
+                 showLabelText: false,
+                 validator: validator,
+                 autofocus: autofocus,
++                readOnly: lockedField,
+               ).workaroundFreezeLinuxMint(),
+             ),
+           ],
+@@ -137,6 +163,7 @@ void showServerSettingsWithValue(
+         controller: controller,
+         errorMsg: errorMsg,
+         validator: validator,
++        readOnly: lockedField,
+       ).workaroundFreezeLinuxMint();
+     }
+ 
+@@ -215,9 +242,12 @@ TextFormField serverSettingsTextFormField({
+   bool autofocus = false,
+   bool showLabelText = true,
+   EdgeInsetsGeometry? contentPadding,
++  bool readOnly = false,
+ }) {
+   return TextFormField(
+     controller: controller,
++    readOnly: readOnly,
++    style: TextStyle(color: readOnly ? Colors.grey : null),
+     decoration: InputDecoration(
+       labelText: showLabelText ? label : null,
+       errorText: errorMsg.isEmpty ? null : errorMsg,
