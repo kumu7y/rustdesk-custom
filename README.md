@@ -70,6 +70,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `RD_RELEASE_REPO` | ✅* | `you/rustdesk-custom` | 更新检查指向的发布仓（`owner/repo`）。*不配置时默认为本仓库；显式配置则覆盖默认 |
 | `RD_WEBSOCKET_ID` | ➖ | `wss://hbbs.example.com:8443` | WebSocket 模式下的 ID 服务器**完整地址**（含端口/路径）。设置页"Use WebSocket"开关打开时启用，自定义端口不会被上游改写成 443。不配则 WS 开关退回上游默认行为 |
 | `RD_WEBSOCKET_RELAY` | ➖ | `wss://hbbs.example.com:8444` | 同上，中继服务器的 ws 完整地址。不配则中继不随 WS 切换 |
+| `RD_HIDE_NETWORK_UI` | ➖ | `false` | 是否隐藏客户端"网络设置"页（默认 `true` 隐藏）。设 `false` 则页面可见：注入的四个服务器字段仍以 ●● 只读显示、Use WebSocket 开关可用，真实值不可见不可改 |
 | `RELEASE_PAT` | ➖ | fine-grained token | **仅当**用变量 `RELEASE_REPO` 把安装包发到另一个仓库时需要（该仓 Contents:read/write）。发本仓库无需此令牌 |
 
 | Variable | 必填 | 示例 | 说明 |
@@ -139,7 +140,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 > `src/embedded_config.rs` 不属于任何补丁——它由 CI 按 Secrets 用 `scripts/gen_embedded_config.py` 在每次构建前生成。
 >
-> 网络设置页可见性由 `RD_HIDE_NETWORK_UI` 控制（默认隐藏）。设为 `false` 时页面可见："Use WebSocket" 开关可正常切换；ID/Relay/API/Key 四个字段即使打开也只显示 ●●●●●●●● 且不可编辑。
+> 网络设置页可见性由 `RD_HIDE_NETWORK_UI` 控制（默认 `true` 隐藏整页；设 `false` 即不隐藏）。页面可见时："Use WebSocket" 开关可正常切换；ID/Relay/API/Key 四个注入字段即使打开也只显示 `********` 且不可编辑（补丁 080），服务器真实值不可见、不可改。
 
 重新生成某个编号补片的流程（只动受影响的功能域）：
 
