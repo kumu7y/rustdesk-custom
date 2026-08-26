@@ -4,3 +4,4 @@
 
 # Python artifacts from running the generator locally
 __pycache__/
+/.zcode/
