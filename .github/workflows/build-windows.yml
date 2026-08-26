@@ -172,6 +172,9 @@ jobs:
           # trees without .gitattributes (hbb_common submodule). Binary mode
           # is mandatory here: MSYS sed -i writes CRLF on Windows.
           python3 - <<'EOF'
+          import glob
+          # Patch hunks are LF-based; the checked-out tree may be CRLF
+          # (windows runners). Normalize BOTH sides or git apply mismatches.
           files = [
               "src/lib.rs", "src/core_main.rs", "src/common.rs", "src/ipc.rs",
               "flutter/lib/common.dart", "flutter/lib/models/server_model.dart",
@@ -179,7 +182,7 @@ jobs:
               "flutter/lib/desktop/pages/desktop_home_page.dart",
               "flutter/lib/main.dart", "flutter/lib/mobile/widgets/dialog.dart",
               "libs/hbb_common/src/websocket.rs",
-          ]
+          ] + sorted(glob.glob("pipeline/patches/*.patch"))
           for f in files:
               try:
                   data = open(f, "rb").read()
