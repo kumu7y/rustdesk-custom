@@ -169,14 +169,28 @@ jobs:
         shell: bash
         run: |
           # Patch hunks are LF-based; guarantee byte-exact context even for
-          # trees without .gitattributes (hbb_common submodule).
-          FILES="src/lib.rs src/core_main.rs src/common.rs src/ipc.rs \
-            flutter/lib/common.dart flutter/lib/models/server_model.dart \
-            flutter/lib/desktop/pages/server_page.dart \
-            flutter/lib/desktop/pages/desktop_home_page.dart \
-            flutter/lib/main.dart flutter/lib/mobile/widgets/dialog.dart \
-            libs/hbb_common/src/websocket.rs"
-          for f in $FILES; do [ -f "$f" ] && sed -i 's/\r$//' "$f" || true; done
+          # trees without .gitattributes (hbb_common submodule). Binary mode
+          # is mandatory here: MSYS sed -i writes CRLF on Windows.
+          python3 - <<'EOF'
+          files = [
+              "src/lib.rs", "src/core_main.rs", "src/common.rs", "src/ipc.rs",
+              "flutter/lib/common.dart", "flutter/lib/models/server_model.dart",
+              "flutter/lib/desktop/pages/server_page.dart",
+              "flutter/lib/desktop/pages/desktop_home_page.dart",
+              "flutter/lib/main.dart", "flutter/lib/mobile/widgets/dialog.dart",
+              "libs/hbb_common/src/websocket.rs",
+          ]
+          for f in files:
+              try:
+                  data = open(f, "rb").read()
+              except FileNotFoundError:
+                  continue
+              fixed = data.replace(b"\r\n", b"\n")
+              if fixed != data:
+                  open(f, "wb").write(fixed)
+                  print("normalized", f)
+          print("done")
+          EOF
 
       - name: Apply custom client patches
         shell: bash
