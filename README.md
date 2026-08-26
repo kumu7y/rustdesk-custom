@@ -107,7 +107,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 | `Apply custom client patches` 失败并报出编号（如 `040-cm-recall.patch`）| 上游改动触及该功能域的补丁区域，sync 已自动开 Issue 并列出冲突 hunk | 只需修复报编号的那一片：解压上游新 tag 源码 → 调整对应文件 → 重新生成该编号 patch（方法见下节）|
 | `Windows cargo check`（fast-check 门禁）失败 | 补丁能贴上但编译不过（上游重构了周边代码）| 看 Issue 中的错误摘要或门禁 run 日志，修复后重跑 sync；全量构建不会启动，不浪费额度 |
 | `Build rustdesk` 编译失败 | 上游升级了 Flutter/Rust/vcpkg 且自动 pin 同步未完全覆盖 | 对照上游 `flutter-build.yml@<tag>` 的 env 与步骤 diff，手工修正 build-windows.yml |
-| `Publish release` 报 RELEASE_PAT | 令牌过期或未配置 | 重新生成并更新 Secret，然后 Re-run failed jobs |
+| `Publish release` 报 RELEASE_PAT（仅配置了外部 `RELEASE_REPO` 时会发生）| 令牌过期或未配置 | 重新生成并更新 Secret，然后 Re-run failed jobs；不需要外部仓就清空该变量 |
 | 客户端从不提示更新 | `RD_RELEASE_REPO` 未配置或拼写错误 | 检查 Secret；确认发布仓存在对应 tag 的 Release |
 | 授权框不弹出 | 确认面板唤回逻辑失效 | 检查 `main.dart` showCmWindow 是否含 `windowManager.show()`、`server_model.dart` 三处 `!client.authorized` 条件 |
 
