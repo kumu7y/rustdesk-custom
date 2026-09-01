@@ -1,0 +1,25 @@
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -59,6 +59,9 @@
+     // Custom client: keep remote sessions alive when the panel is closed -
+     // just hide it (it re-shows automatically on the next event).
+     if (gFFI.serverModel.clients.isNotEmpty) {
++      // Belt & braces: never let the OS destroy the window while a session or
++      // file transfer is active - the engine hosts every live connection.
++      windowManager.setPreventClose(true);
+       hideCmWindow();
+       return;
+     }
+@@ -331,6 +334,12 @@
+   }
+ 
+   Future<bool> handleWindowCloseButton() async {
++    // Custom client: a programmatic close() destroys the window/engine and
++    // would kill in-flight sessions AND file transfers. Hide instead.
++    if (gFFI.serverModel.clients.isNotEmpty) {
++      hideCmWindow();
++      return false;
++    }
+     var tabController = gFFI.serverModel.tabController;
+     final connLength = tabController.length;
+     if (connLength <= 1) {
