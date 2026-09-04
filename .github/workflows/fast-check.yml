@@ -292,3 +292,27 @@ jobs:
       - name: Cargo check (library, same features as release build)
         shell: bash
         run: cargo check --locked --lib --features flutter,hwcodec,vram
+
+      # Dart gate: catches errors cargo cannot see (our patches are mostly
+      # Dart-side). Run only on the patched files plus their import closure
+      # via the package root analyze of lib/main.dart's dependencies.
+      - name: Install flutter (for dart analyze)
+        if: steps.flutter-cache.outputs.cache-hit != 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: "3.24.5"
+          architecture: x64
+          cache: true
+        id: flutter-cache
+
+      - name: Dart analyze patched files
+        if: steps.flutter-cache.outputs.cache-hit != 'true' || true
+        shell: pwsh
+        run: |
+          flutter pub get --directory flutter
+          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings `
+            flutter/lib/main.dart `
+            flutter/lib/models/server_model.dart `
+            flutter/lib/desktop/pages/server_page.dart `
+            flutter/lib/mobile/widgets/dialog.dart

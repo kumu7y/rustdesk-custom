@@ -1,6 +1,14 @@
 --- a/flutter/lib/main.dart
 +++ b/flutter/lib/main.dart
-@@ -325,6 +325,7 @@
+@@ -16,6 +16,7 @@
+ import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
+ import 'package:flutter_hbb/desktop/screen/desktop_terminal_screen.dart';
+ import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
++import 'package:flutter_hbb/models/server_model.dart';
+ import 'package:flutter_hbb/models/state_model.dart';
+ import 'package:flutter_hbb/utils/multi_window_manager.dart';
+ import 'package:flutter_localizations/flutter_localizations.dart';
+@@ -325,6 +326,7 @@
      _isCmReadyToShow = true;
    } else if (_isCmReadyToShow) {
      if (await windowManager.getOpacity() != 1) {
@@ -8,7 +16,7 @@
        await windowManager.setOpacity(1);
        // Custom client: hideCmWindow() uses windowManager.hide(), which needs
        // an explicit show() to become visible again (opacity/focus alone
-@@ -351,6 +352,7 @@
+@@ -351,6 +353,7 @@
      _isCmReadyToShow = true;
    } else if (_isCmReadyToShow) {
      if (await windowManager.getOpacity() != 0) {
