@@ -1,0 +1,76 @@
+--- a/flutter/lib/main.dart
++++ b/flutter/lib/main.dart
+@@ -325,6 +325,7 @@
+     _isCmReadyToShow = true;
+   } else if (_isCmReadyToShow) {
+     if (await windowManager.getOpacity() != 1) {
++      cmManuallyHidden = false;
+       await windowManager.setOpacity(1);
+       // Custom client: hideCmWindow() uses windowManager.hide(), which needs
+       // an explicit show() to become visible again (opacity/focus alone
+@@ -351,6 +352,7 @@
+     _isCmReadyToShow = true;
+   } else if (_isCmReadyToShow) {
+     if (await windowManager.getOpacity() != 0) {
++      cmManuallyHidden = true;
+       await windowManager.setOpacity(0);
+       bind.mainHideDock();
+       await windowManager.minimize();
+--- a/flutter/lib/models/server_model.dart
++++ b/flutter/lib/models/server_model.dart
+@@ -22,6 +22,12 @@
+ const kUseTemporaryPassword = "use-temporary-password";
+ const kUsePermanentPassword = "use-permanent-password";
+ const kUseBothPasswords = "use-both-passwords";
++
++// Custom client: set when the user closes the CM window while sessions or
++// file transfers are alive - the window was hidden on purpose, so periodic
++// "clients present -> show window" logic must not immediately pop it back.
++// Cleared whenever an authorization request or chat forces the window up.
++bool cmManuallyHidden = false;
+ 
+ class ServerModel with ChangeNotifier {
+   bool _isStart = false; // Android MainService status
+@@ -170,7 +176,7 @@
+             }
+           } else {
+             _zeroClientLengthCounter = 0;
+-            if (!hideCm) showCmWindow();
++            if (!hideCm && !cmManuallyHidden) showCmWindow();
+           }
+         }
+       }
+@@ -531,7 +537,7 @@
+       if (_clients.isEmpty) {
+         hideCmWindow();
+       } else if (!hideCm || _clients.any((c) => !c.authorized)) {
+-        showCmWindow();
++        if (!cmManuallyHidden) showCmWindow();
+       }
+     }
+     if (_clients.length != oldClientLenght) {
+@@ -575,7 +581,8 @@
+         tabController.remove(index_disconnected);
+       }
+       if (desktopType == DesktopType.cm && (!hideCm || !client.authorized)) {
+-        showCmWindow();
++        if (!client.authorized) cmManuallyHidden = false;
++        if (!hideCm && !cmManuallyHidden) showCmWindow();
+       }
+       scrollToBottom();
+       notifyListeners();
+--- a/flutter/lib/desktop/pages/server_page.dart
++++ b/flutter/lib/desktop/pages/server_page.dart
+@@ -78,7 +78,11 @@
+ 
+   void onRemoveId(String id) {
+     if (tabController.state.value.tabs.isEmpty) {
+-      windowManager.close();
++      if (gFFI.serverModel.clients.isNotEmpty) {
++        hideCmWindow();
++      } else {
++        windowManager.close();
++      }
+     }
+   }
+ 
