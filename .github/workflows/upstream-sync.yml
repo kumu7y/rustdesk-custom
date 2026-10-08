@@ -241,12 +241,15 @@ jobs:
           RUN_ID=""
           for i in $(seq 1 12); do
             sleep 10
-            RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/fast-check.yml/runs" \
-              -F per_page=5 -F created=">=${T0}" \
+            RUN_ID=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/fast-check.yml/runs" \
+              -f per_page=5 -f created=">=${T0}" \
               --jq '.workflow_runs | map(select(.head_branch == "${{ github.ref_name }}")) | .[0].id // empty' 2>/dev/null || true)
-            # Keep this an if: a bare "&& break" returns non-zero whenever the run
-            # has not shown up yet, and `set -e` then killed the step on the very
-            # first poll - which is why the gate never reached gh run watch.
+            # gh api switches to POST as soon as a -f/-F field is present, and POST
+            # to this endpoint answers 404 with a JSON error body - so only a bare
+            # number counts as a real run id. The break stays an if: "&& break"
+            # returns non-zero while the run is missing, which `set -e` turns into
+            # an abort on the very first poll.
+            case "$RUN_ID" in ''|*[!0-9]*) RUN_ID="" ;; esac
             if [ -n "$RUN_ID" ]; then break; fi
           done
           if [ -z "$RUN_ID" ] ; then
