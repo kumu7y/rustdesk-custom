@@ -116,12 +116,13 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| `Apply custom client patches` 失败并报出编号（如 `040-cm-recall.patch`）| 上游改动触及该功能域的补丁区域，sync 已自动开 Issue 并列出冲突 hunk | 只需修复报编号的那一片：解压上游新 tag 源码 → 调整对应文件 → 重新生成该编号 patch（方法见下节）|
+| `Apply custom client patches` 失败并报出编号（如 `040-cm-recall.patch`）| 上游改动触及该功能域的补丁区域，sync 已自动开 Issue 并列出冲突 hunk | 只需修复报编号的那一片：解压上游新 tag 源码（含 submodule：`git submodule update --init --recursive`）→ 调整对应文件 → 重新生成该编号 patch（方法见下节）|
 | `Windows cargo check`（fast-check 门禁）失败 | 补丁能贴上但编译不过（上游重构了周边代码）| 看 Issue 中的错误摘要或门禁 run 日志，修复后重跑 sync；全量构建不会启动，不浪费额度 |
 | `Build rustdesk` 编译失败 | 上游升级了 Flutter/Rust/vcpkg 且自动 pin 同步未完全覆盖 | 对照上游 `flutter-build.yml@<tag>` 的 env 与步骤 diff，手工修正 build-windows.yml |
 | `Publish release` 报 RELEASE_PAT（仅配置了外部 `RELEASE_REPO` 时会发生）| 令牌过期或未配置 | 重新生成并更新 Secret，然后 Re-run failed jobs；不需要外部仓就清空该变量 |
 | 客户端从不提示更新 | `RD_RELEASE_REPO` 未配置或拼写错误 | 检查 Secret；确认发布仓存在对应 tag 的 Release |
 | 授权框不弹出 | 确认面板唤回逻辑失效 | 检查 `main.dart` showCmWindow 是否含 `windowManager.show()`、`server_model.dart` 三处 `!client.authorized` 条件 |
+| sync 报 `Patch validation failed for upstream X`，之后一直不派发构建 | 补丁在新版上游贴不上，门禁按设计拦下全量构建（全量构建不会启动）| 看该 Issue 正文的首个失败补丁与冲突 hunk，rebase 那一片后重跑 sync。注意 `Validate patches` 步骤带 `continue-on-error`，run 整体仍显示绿色成功，要点进 run 看各步骤状态 |
 
 ## 补丁维护（上游变更后如何重新打补丁）
 
@@ -149,7 +150,7 @@ build-windows.yml：检出上游源码 → 注入版本号 → 应用行为补�
 cd A && git init -q && git add -A && git commit -qm base
 cp B/<修改过的文件> 对应路径/
 git add -A && git diff --cached > patches/0NN-<name>.patch
-# 验证：在全新解压的上游树按编号顺序逐个 git apply --check
+# 验证：在全新解压的上游树（hbb_common 是 git submodule，先 git submodule update --init --recursive）按编号顺序逐个 git apply --check
 ```
 
 构建与快测工作流会按文件名顺序自动循环应用 `patches/*.patch`，任一片失败即报出具体编号。

@@ -1,5 +1,5 @@
 diff --git a/flutter/lib/desktop/pages/server_page.dart b/flutter/lib/desktop/pages/server_page.dart
-index 8bd7df0..cd9ac43 100644
+index eeb51b6..52d7567 100644
 --- a/flutter/lib/desktop/pages/server_page.dart
 +++ b/flutter/lib/desktop/pages/server_page.dart
 @@ -6,6 +6,7 @@ import 'dart:math';
@@ -10,7 +10,7 @@ index 8bd7df0..cd9ac43 100644
  import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
  import 'package:flutter_hbb/models/chat_model.dart';
  import 'package:flutter_hbb/models/cm_file_model.dart';
-@@ -55,6 +56,12 @@ class _DesktopServerPageState extends State<DesktopServerPage>
+@@ -63,6 +64,12 @@ class _DesktopServerPageState extends State<DesktopServerPage>
  
    @override
    void onWindowClose() {
@@ -20,14 +20,14 @@ index 8bd7df0..cd9ac43 100644
 +      hideCmWindow();
 +      return;
 +    }
-     Future.wait([gFFI.serverModel.closeAll(), gFFI.close()]).then((_) {
-       if (isMacOS) {
-         RdPlatformChannel.instance.terminate();
+     // Other platforms keep the old behaviour exactly: the ambiguity this guards against is a
+     // Linux session logout, which closes every window in the session.
+     final byOperator = _cmClosedByOperator || !isLinux;
 diff --git a/flutter/lib/main.dart b/flutter/lib/main.dart
-index 9bd68ed..202da3b 100644
+index 5f234cb..55165fb 100644
 --- a/flutter/lib/main.dart
 +++ b/flutter/lib/main.dart
-@@ -326,6 +326,10 @@ showCmWindow({bool isStartup = false}) async {
+@@ -321,6 +321,10 @@ showCmWindow({bool isStartup = false}) async {
    } else if (_isCmReadyToShow) {
      if (await windowManager.getOpacity() != 1) {
        await windowManager.setOpacity(1);

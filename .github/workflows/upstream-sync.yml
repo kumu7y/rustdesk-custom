@@ -54,6 +54,18 @@ jobs:
             echo "tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout upstream tag with submodules
+        # A source tarball ships an empty libs/hbb_common (it is a git
+        # submodule), which made every patch touching it look broken. Mirror
+        # the real build checkout instead.
+        if: steps.check.outputs.should_build == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ steps.check.outputs.tag }}
+          submodules: recursive
+          path: upstream
+
       - name: Validate patches against upstream tag
         id: validate
         if: steps.check.outputs.should_build == 'true'
@@ -61,12 +73,17 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.check.outputs.tag }}"
-          curl -sSL -o /tmp/src.tar.gz "https://github.com/${UPSTREAM_REPO}/archive/refs/tags/${TAG}.tar.gz"
-          tar -xzf /tmp/src.tar.gz -C /tmp
-          cd "/tmp/${UPSTREAM_REPO#*/}-${TAG}"
+          cd "${GITHUB_WORKSPACE}/upstream"
+          # Patch hunks are LF-based while some patch files are generated on
+          # Windows; normalize copies so a CRLF patch cannot fail here for a
+          # reason the real build (which normalizes) does not care about.
+          rm -rf /tmp/patches && mkdir -p /tmp/patches
+          for p in "${GITHUB_WORKSPACE}"/patches/*.patch; do
+            tr -d '\r' < "$p" > "/tmp/patches/$(basename "$p")"
+          done
           FAILED=""
           REJ=""
-          for p in ${GITHUB_WORKSPACE}/patches/*.patch; do
+          for p in /tmp/patches/*.patch; do
             NAME=$(basename "$p")
             if git apply --whitespace=nowarn --check "$p" 2>/tmp/apply-err.txt; then
               git apply --whitespace=nowarn "$p"
@@ -85,17 +102,19 @@ jobs:
               break
             fi
           done
-          if [ -n "$FAILED" ]; then
-            echo "Patches DO NOT apply cleanly to ${TAG}; first failure: ${FAILED}"
-            exit 1
-          fi
-          echo "All patches apply cleanly to ${TAG}."
+          # Publish the diagnosis BEFORE bailing out: exiting first left
+          # failed_patch and rej_summary empty, so the issue body was blank.
           {
             echo "failed_patch=${FAILED}"
             echo "rej_summary<<REJ_EOF"
             echo "${REJ:-none}"
             echo "REJ_EOF"
           } >> "$GITHUB_OUTPUT"
+          if [ -n "$FAILED" ]; then
+            echo "Patches DO NOT apply cleanly to ${TAG}; first failure: ${FAILED}"
+            exit 1
+          fi
+          echo "All patches apply cleanly to ${TAG}."
 
       - name: Open issue when patches need updating
         if: steps.check.outputs.should_build == 'true' && steps.validate.outcome == 'failure'
