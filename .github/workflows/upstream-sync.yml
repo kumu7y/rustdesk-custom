@@ -16,7 +16,9 @@ on:
 permissions:
   actions: write
   issues: write
-  contents: read
+  # The pin sync below commits and pushes .github/workflows/*.yml when the
+  # upstream toolchain moves; a read-only token made that push fail with 403.
+  contents: write
 
 env:
   UPSTREAM_REPO: "rustdesk/rustdesk"
@@ -156,7 +158,10 @@ jobs:
           # Map upstream env keys -> our local keys
           sync_pin() {
             local UP_KEY="$1" LOCAL_KEY="$2" SRC="$3" WF VAL OLD
-            VAL=$(grep -E "^  ${UP_KEY}: " "$SRC" | head -n1 | sed 's/^[^:]*:[[:space:]]*//; s/"//g' | tr -d '\r')
+            # Strip the key prefix, any inline YAML comment and the quotes.
+            # Upstream annotates its pins (SCITER_RUST_VERSION: "1.75" # why),
+            # and copying that comment in fabricated a pin change every run.
+            VAL=$(grep -E "^  ${UP_KEY}: " "$SRC" | head -n1 | sed 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/"//g' | tr -d '\r')
             if [ -z "$VAL" ]; then
               echo "::warning::pin ${UP_KEY} not found in ${SRC##*/}"
               return
@@ -292,3 +297,24 @@ jobs:
         run: |
           gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" -f tag="${{ steps.check.outputs.tag }}"
           echo "Build dispatched for ${{ steps.check.outputs.tag }} (compile gate passed)."
+
+      - name: Open issue when the sync run fails
+        # Without this, a failure above is silent: the run goes red but nothing
+        # reaches the issue tracker, which is how a broken gate goes unnoticed.
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          TITLE="Upstream sync failed for ${TAG:-unknown}"
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "${TITLE} in:title" --json number --jq 'length')
+          if [ "$EXISTING" -eq 0 ]; then
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --body "The upstream sync run failed before it could dispatch a build.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Patch validation and compile-gate failures open their own issues, so reaching this one usually means the checkout, the pin sync or the dispatch plumbing broke."
+          fi
