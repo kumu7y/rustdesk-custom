@@ -243,8 +243,11 @@ jobs:
             sleep 10
             RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/fast-check.yml/runs" \
               -F per_page=5 -F created=">=${T0}" \
-              --jq '.workflow_runs | map(select(.head_branch == "${{ github.ref_name }}")) | .[0].id // empty')
-            [ -n "$RUN_ID" ] && break
+              --jq '.workflow_runs | map(select(.head_branch == "${{ github.ref_name }}")) | .[0].id // empty' 2>/dev/null || true)
+            # Keep this an if: a bare "&& break" returns non-zero whenever the run
+            # has not shown up yet, and `set -e` then killed the step on the very
+            # first poll - which is why the gate never reached gh run watch.
+            if [ -n "$RUN_ID" ]; then break; fi
           done
           if [ -z "$RUN_ID" ] ; then
             echo "::error::fast-check run did not appear"
