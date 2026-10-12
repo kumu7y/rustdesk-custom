@@ -22,3 +22,19 @@ index 6b437a9..8c8cf15 100644
      #[cfg(windows)]
      if !crate::platform::windows::bootstrap() {
          // return None to terminate the process
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+index f9cc2d6..53ecfc9 100644
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -51,6 +51,11 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
+     } else {
+         crate::read_custom_client(custom_client_config);
+     }
++    // The desktop path injects the locked options from core_main, which is
++    // compiled out on android and ios. Without this call the embedded server
++    // addresses and the preset password never reach the mobile builds, and the
++    // client silently falls back to the public rendezvous servers.
++    crate::embedded_config::init();
+     #[cfg(target_os = "android")]
+     {
+         // flexi_logger can't work when android_logger initialized.
