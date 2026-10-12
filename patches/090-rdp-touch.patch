@@ -1,8 +1,31 @@
 diff --git a/flutter/lib/common/widgets/remote_input.dart b/flutter/lib/common/widgets/remote_input.dart
-index 1e2daac..07dec2c 100644
+index 1e2daac..44a5974 100644
 --- a/flutter/lib/common/widgets/remote_input.dart
 +++ b/flutter/lib/common/widgets/remote_input.dart
-@@ -488,10 +488,26 @@ class _RawTouchGestureDetectorRegionState
+@@ -104,6 +104,13 @@ class _RawTouchGestureDetectorRegionState
+   bool _touchModePanStarted = false;
+   Offset _doubleFinerTapPosition = Offset.zero;
+ 
++  // A two-finger gesture is either a pinch (zoom the local canvas) or a slide
++  // (scroll the remote window). Decide once and keep the decision for the rest
++  // of the gesture: judging frame by frame made a slide pan the canvas as soon
++  // as the finger distance wobbled by a pixel.
++  int _twoFingerGestureMode = 0; // 0 = undecided, 1 = pinch, 2 = scroll
++  double _twoFingerTravel = 0;
++
+   // For mouse mode, we need to block the events when the cursor is in a blocked area.
+   // So we need to cache the last tap down position.
+   Offset? _lastTapDownPositionForMouseMode;
+@@ -449,6 +456,8 @@ class _RawTouchGestureDetectorRegionState
+   // scale + pan event
+   onTwoFingerScaleStart(ScaleStartDetails d) {
+     _lastTapDownDetails = null;
++    _twoFingerGestureMode = 0;
++    _twoFingerTravel = 0;
+     if (isNotTouchBasedDevice()) {
+       return;
+     }
+@@ -488,10 +497,29 @@ class _RawTouchGestureDetectorRegionState
        }
      } else {
        // mobile
@@ -10,17 +33,20 @@ index 1e2daac..07dec2c 100644
 -      _scale = d.scale;
 -      ffi.canvasModel.panX(d.focalPointDelta.dx);
 -      ffi.canvasModel.panY(d.focalPointDelta.dy);
-+      // A pinch zooms the local view; a steady two-finger slide scrolls the
-+      // remote window instead of panning our own canvas, which is what the
-+      // other RDP clients do with it. Touch mode keeps the old behaviour:
-+      // there the remote is itself a touch device, so its own gestures win.
-+      final pinching = (d.scale - _scale).abs() > 0.01;
-+      if (pinching || handleTouch) {
++      if (_twoFingerGestureMode == 0) {
++        _twoFingerTravel += d.focalPointDelta.distance;
++        if ((d.scale - 1.0).abs() > 0.15) {
++          _twoFingerGestureMode = 1;
++        } else if (_twoFingerTravel > 12.0) {
++          _twoFingerGestureMode = 2;
++        }
++      }
++      if (_twoFingerGestureMode == 1 || handleTouch) {
 +        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
 +        _scale = d.scale;
 +        ffi.canvasModel.panX(d.focalPointDelta.dx);
 +        ffi.canvasModel.panY(d.focalPointDelta.dy);
-+      } else {
++      } else if (_twoFingerGestureMode == 2) {
 +        _mouseScrollIntegral += d.focalPointDelta.dy / 4;
 +        if (_mouseScrollIntegral > 1) {
 +          inputModel.scroll(1);
@@ -33,12 +59,13 @@ index 1e2daac..07dec2c 100644
      }
    }
  
-@@ -499,6 +515,8 @@ class _RawTouchGestureDetectorRegionState
+@@ -499,6 +527,9 @@ class _RawTouchGestureDetectorRegionState
      if (isNotTouchBasedDevice()) {
        return;
      }
-+    // Drop any partial scroll from this gesture.
 +    _mouseScrollIntegral = 0;
++    _twoFingerGestureMode = 0;
++    _twoFingerTravel = 0;
      if ((isDesktop || isWebDesktop)) {
        if (widget.isCamera) return;
        await bind.sessionSendPointer(
