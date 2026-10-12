@@ -1,0 +1,44 @@
+diff --git a/flutter/lib/common/widgets/remote_input.dart b/flutter/lib/common/widgets/remote_input.dart
+index 1e2daac..07dec2c 100644
+--- a/flutter/lib/common/widgets/remote_input.dart
++++ b/flutter/lib/common/widgets/remote_input.dart
+@@ -488,10 +488,26 @@ class _RawTouchGestureDetectorRegionState
+       }
+     } else {
+       // mobile
+-      ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+-      _scale = d.scale;
+-      ffi.canvasModel.panX(d.focalPointDelta.dx);
+-      ffi.canvasModel.panY(d.focalPointDelta.dy);
++      // A pinch zooms the local view; a steady two-finger slide scrolls the
++      // remote window instead of panning our own canvas, which is what the
++      // other RDP clients do with it. Touch mode keeps the old behaviour:
++      // there the remote is itself a touch device, so its own gestures win.
++      final pinching = (d.scale - _scale).abs() > 0.01;
++      if (pinching || handleTouch) {
++        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
++        _scale = d.scale;
++        ffi.canvasModel.panX(d.focalPointDelta.dx);
++        ffi.canvasModel.panY(d.focalPointDelta.dy);
++      } else {
++        _mouseScrollIntegral += d.focalPointDelta.dy / 4;
++        if (_mouseScrollIntegral > 1) {
++          inputModel.scroll(1);
++          _mouseScrollIntegral = 0;
++        } else if (_mouseScrollIntegral < -1) {
++          inputModel.scroll(-1);
++          _mouseScrollIntegral = 0;
++        }
++      }
+     }
+   }
+ 
+@@ -499,6 +515,8 @@ class _RawTouchGestureDetectorRegionState
+     if (isNotTouchBasedDevice()) {
+       return;
+     }
++    // Drop any partial scroll from this gesture.
++    _mouseScrollIntegral = 0;
+     if ((isDesktop || isWebDesktop)) {
+       if (widget.isCamera) return;
+       await bind.sessionSendPointer(
