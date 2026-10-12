@@ -183,6 +183,8 @@ jobs:
               "flutter/lib/desktop/pages/desktop_home_page.dart",
               "flutter/lib/main.dart", "flutter/lib/mobile/widgets/dialog.dart",
               "flutter/lib/common/widgets/remote_input.dart",
+              "flutter/lib/mobile/pages/remote_page.dart",
+              "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt",
               "libs/hbb_common/src/websocket.rs",
           ] + sorted(glob.glob("pipeline/patches/*.patch"))
           for f in files:

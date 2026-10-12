@@ -1,0 +1,74 @@
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+index 7225e52..f2b32a3 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt
+@@ -15,6 +15,7 @@ import android.content.Context
+ import android.content.Intent
+ import android.content.ServiceConnection
+ import android.content.ClipboardManager
++import android.graphics.Rect
+ import android.os.Bundle
+ import android.os.Build
+ import android.os.IBinder
+@@ -262,6 +263,28 @@ class MainActivity : FlutterActivity() {
+         }
+     }
+ 
++    /**
++     * Keep Android's system back gesture from stealing swipes that belong to the
++     * remote session. Only the vertical edges are excluded: Android caps an app at
++     * 200dp per edge, and the bottom home gesture cannot be excluded at all.
++     */
++    private fun setGestureExclusion(enabled: Boolean) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
++        val view = window?.decorView ?: return
++        if (!enabled) {
++            view.systemGestureExclusionRects = emptyList()
++            return
++        }
++        val w = view.width
++        val h = view.height
++        if (w <= 0 || h <= 0) return
++        val edge = (w * 0.06f).toInt().coerceIn(16, 200)
++        view.systemGestureExclusionRects = listOf(
++            Rect(0, 0, edge, h),
++            Rect(w - edge, 0, w, h)
++        )
++    }
++
+     private fun initFlutterChannel(flutterMethodChannel: MethodChannel) {
+         flutterMethodChannel.setMethodCallHandler { call, result ->
+             // make sure result will be invoked, otherwise flutter will await forever
+@@ -277,6 +300,10 @@ class MainActivity : FlutterActivity() {
+                     requestMediaProjection()
+                     result.success(true)
+                 }
++                "set_gesture_exclusion" -> {
++                    setGestureExclusion(call.arguments as? Boolean ?: false)
++                    result.success(true)
++                }
+                 "start_capture" -> {
+                     mainService?.let {
+                         result.success(it.startCapture())
+diff --git a/flutter/lib/mobile/pages/remote_page.dart b/flutter/lib/mobile/pages/remote_page.dart
+index edcfe2b..2b4ed4b 100644
+--- a/flutter/lib/mobile/pages/remote_page.dart
++++ b/flutter/lib/mobile/pages/remote_page.dart
+@@ -102,6 +102,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     );
+     WidgetsBinding.instance.addPostFrameCallback((_) {
+       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
++      // Stop Android's system back gesture from competing with the session's own
++      // swipes along the screen edges.
++      gFFI.invokeMethod("set_gesture_exclusion", true);
+       gFFI.dialogManager
+           .showLoading(translate('Connecting...'), onCancel: closeConnection);
+     });
+@@ -157,6 +160,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+     gFFI.inputModel.listenToMouse(false);
+     gFFI.imageModel.disposeImage();
+     gFFI.cursorModel.disposeImages();
++    gFFI.invokeMethod("set_gesture_exclusion", false);
+     await gFFI.invokeMethod("enable_soft_keyboard", true);
+     _mobileFocusNode.dispose();
+     _physicalFocusNode.dispose();
