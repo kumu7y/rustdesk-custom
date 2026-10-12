@@ -308,11 +308,10 @@ jobs:
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
-          if [ -z "${SIGN_KEY}" ]; then
-            # No keystore configured: fall back to the debug key so the APK is
-            # still installable for testing.
-            sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-          fi
+          # Always build against the debug key: gradle's release signingConfig
+          # has no storeFile in CI, and the finished APK is re-signed afterwards
+          # by sign-android-release using the real keystore secrets.
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.cxx_dir }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}/
           cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}/librustdesk.so
