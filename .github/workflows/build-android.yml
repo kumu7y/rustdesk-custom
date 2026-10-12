@@ -227,6 +227,27 @@ jobs:
               raise SystemExit('generated embedded_config.rs is incomplete!')
           PYEOF
 
+      - name: Inject release version (Cargo.toml + Cargo.lock, keep --locked valid)
+        # Without this the embedded VERSION stays at the upstream value, while the
+        # release tag carries our local suffix - the client then sees
+        # get_version_number(tag) > get_version_number(crate::VERSION) on every check
+        # and offers an update it is already running.
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'EOF'
+          import os, re
+          tag = os.environ['RELEASE_TAG']
+          s = open('Cargo.toml', encoding='utf-8').read()
+          s = re.sub(r'(?m)^(version\s*=\s*)"[^"]*"', lambda m: m.group(1) + f'"{tag}"', s, count=1)
+          open('Cargo.toml', 'w', encoding='utf-8', newline='').write(s)
+          s = open('Cargo.lock', encoding='utf-8').read()
+          s = re.sub(r'(name = "rustdesk"\r?\nversion = )"[^"]*"', lambda m: m.group(1) + f'"{tag}"', s, count=1)
+          open('Cargo.lock', 'w', encoding='utf-8', newline='').write(s)
+          print('injected release version:', tag)
+          EOF
+
       - name: Restore bridge files
         uses: actions/download-artifact@v4
         with:
