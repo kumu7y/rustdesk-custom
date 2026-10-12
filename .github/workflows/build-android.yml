@@ -1,0 +1,350 @@
+name: Build Android Custom Client
+
+# Same pipeline as build-windows.yml: check out upstream, apply the numbered
+# patches, generate embedded_config.rs from secrets, build, publish.
+# Only the toolchain and the packaging step differ. The patched files are the
+# same set, because main.dart imports the desktop pages unconditionally and the
+# Android build compiles them too.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. 1.5.0-1)'
+        required: true
+        type: string
+      upstream_ref:
+        description: 'Upstream source ref (defaults to the release tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: "1.75"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  FLUTTER_VERSION: "3.24.5"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  CARGO_NDK_VERSION: "3.1.2"
+  NDK_VERSION: "r28c"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  SOURCE_REF: ${{ inputs.upstream_ref || inputs.tag }}
+  TAG_NAME: "${{ inputs.tag }}"
+  VERSION: "${{ inputs.tag }}"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # Secrets cannot be referenced from an 'if', so they are surfaced here and
+  # the signing steps test the environment instead.
+  SIGN_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+  SIGN_ALIAS: ${{ secrets.ANDROID_ALIAS }}
+  SIGN_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+  SIGN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+jobs:
+  generate-bridge:
+    name: Generate flutter bridge
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          submodules: recursive
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake curl gcc g++ git libclang-dev \
+            libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: bridge
+
+      - name: Cache bridge deps
+        uses: actions/cache@v4
+        with:
+          path: /tmp/flutter_rust_bridge
+          key: bridge-android-${{ env.BRIDGE_FLUTTER_VERSION }}
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+
+      - name: Generate bridge
+        shell: bash
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          sed -i -E -e 's/(extended_text:[[:space:]]*)[0-9]+\.[0-9]+\.[0-9]+/\113.0.0/g' flutter/pubspec.yaml
+          pushd flutter && flutter pub get && popd
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Upload bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact-android
+          retention-days: 3
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  build-android:
+    name: Build Android ${{ matrix.arch }}
+    needs: [generate-bridge]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64-v8a
+            target: aarch64-linux-android
+            android_target: arm64-v8a
+            flutter_platform: android-arm64
+            ndk_script: ndk_arm64.sh
+            abi_dir: arm64-v8a
+            cxx_dir: aarch64-linux-android
+          - arch: armeabi-v7a
+            target: armv7-linux-androideabi
+            android_target: armeabi-v7a
+            flutter_platform: android-arm
+            ndk_script: ndk_arm.sh
+            abi_dir: armeabi-v7a
+            cxx_dir: arm-linux-androideabi
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          submodules: recursive
+
+      - name: Checkout this pipeline repo (for patches)
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Normalize line endings of patched files
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import glob
+          files = [
+              "src/lib.rs", "src/core_main.rs", "src/common.rs", "src/ipc.rs",
+              "flutter/lib/common.dart", "flutter/lib/models/server_model.dart",
+              "flutter/lib/desktop/pages/server_page.dart",
+              "flutter/lib/desktop/pages/desktop_home_page.dart",
+              "flutter/lib/main.dart", "flutter/lib/mobile/widgets/dialog.dart",
+              "flutter/lib/common/widgets/remote_input.dart",
+              "libs/hbb_common/src/websocket.rs",
+          ] + sorted(glob.glob("pipeline/patches/*.patch"))
+          for f in files:
+              try:
+                  data = open(f, "rb").read()
+              except FileNotFoundError:
+                  continue
+              fixed = data.replace(b"\r\n", b"\n")
+              if fixed != data:
+                  open(f, "wb").write(fixed)
+                  print("normalized", f)
+          print("done")
+          PYEOF
+
+      - name: Apply custom client patches
+        shell: bash
+        run: |
+          for p in ./pipeline/patches/*.patch; do
+            echo "Applying $(basename "$p") ..."
+            git apply --whitespace=nowarn --verbose "$p" || {
+              echo "::error::Patch failed: $(basename "$p")"
+              exit 1
+            }
+          done
+          echo "All patches applied."
+
+      - name: Generate embedded config from secrets
+        shell: bash
+        env:
+          RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
+          RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
+          RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
+          RD_KEY: ${{ secrets.RD_KEY }}
+          RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
+          RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
+          RD_WEBSOCKET_ID: ${{ secrets.RD_WEBSOCKET_ID }}
+          RD_WEBSOCKET_RELAY: ${{ secrets.RD_WEBSOCKET_RELAY }}
+          RD_HIDE_NETWORK_UI: ${{ secrets.RD_HIDE_NETWORK_UI }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+          python3 - <<'PYEOF'
+          s = open('src/embedded_config.rs', encoding='utf-8').read()
+          lines = s.count('\n')
+          syms = ['UPDATE_RELEASE_REPO_OWNER', 'UPDATE_RELEASE_REPO_NAME',
+                  'unattended_hide_cm', 'fn init', 'LOCKED_SERVER_OPTIONS']
+          missing = [k for k in syms if k not in s]
+          print(f'self-check: bytes={len(s)} lines={lines} missing={missing}')
+          if missing or lines < 30:
+              raise SystemExit('generated embedded_config.rs is incomplete!')
+          PYEOF
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact-android
+          path: ./
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake curl gcc g++ git libclang-dev \
+            libgtk-3-dev llvm-dev nasm ninja-build \
+            openjdk-17-jdk-headless pkg-config wget
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          if [[ "${{ env.FLUTTER_VERSION }}" == "3.24.5" ]]; then
+            git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! ./flutter/build_android_deps.sh "${{ matrix.android_target }}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "$f:"; echo "======"; cat "$f"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-lib-cache-android
+          key: ${{ matrix.target }}
+
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/${{ matrix.ndk_script }}
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}
+          cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}/librustdesk.so
+
+      - name: Build APK
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          if [ -z "${SIGN_KEY}" ]; then
+            # No keystore configured: fall back to the debug key so the APK is
+            # still installable for testing.
+            sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          fi
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.cxx_dir }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}/
+          cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.abi_dir }}/librustdesk.so
+          pushd flutter
+          flutter build apk --release --target-platform ${{ matrix.flutter_platform }} --split-per-abi
+          popd
+          mkdir -p dist
+          cp ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.abi_dir }}-release.apk ./dist/rustdesk-${{ env.VERSION }}-android-${{ matrix.arch }}.apk
+          ls -la dist
+
+      - name: Sign APK
+        if: env.SIGN_KEY != ''
+        uses: r0adkll/sign-android-release@v1
+        id: sign
+        with:
+          releaseDirectory: ./dist
+          signingKeyBase64: ${{ env.SIGN_KEY }}
+          alias: ${{ env.SIGN_ALIAS }}
+          keyStorePassword: ${{ env.SIGN_STORE_PASSWORD }}
+          keyPassword: ${{ env.SIGN_KEY_PASSWORD }}
+
+      - name: Publish APK
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${{ env.TAG_NAME }}"
+          APK="$(ls dist/rustdesk-*.apk | head -n1)"
+          if [ -n "${{ steps.sign.outputs.signedReleaseFile }}" ]; then
+            APK="${{ steps.sign.outputs.signedReleaseFile }}"
+          fi
+          echo "publishing $APK to $TAG"
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "$TAG" "$APK" --repo "${GITHUB_REPOSITORY}" \
+              --title "$TAG" --notes "Custom RustDesk client $TAG"
+          fi
