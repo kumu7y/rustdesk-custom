@@ -175,6 +175,7 @@ jobs:
               "flutter/lib/common/widgets/remote_input.dart",
               "flutter/lib/mobile/pages/remote_page.dart",
               "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt",
+              "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt",
               "libs/hbb_common/src/websocket.rs",
           ] + sorted(glob.glob("pipeline/patches/*.patch"))
           for f in files:

@@ -1,0 +1,48 @@
+diff --git a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
+index 8c9d850..e71474e 100644
+--- a/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
++++ b/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt
+@@ -35,6 +35,12 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
+     // It's okay to that `rustEnableClientClipboard(false)` is called after `rustUpdateClipboard`,
+     // though the `lastUpdatedClipData` will be set to null once.
+     private var lastUpdatedClipData: ClipData? = null
++    // Content anchors for the write path. Comparing ClipData objects is not
++    // enough: the framework may hand back a normalised copy after
++    // setPrimaryClip, so an identical payload can look different and get
++    // written again - which re-shows the system "copied" toast every time.
++    private var lastAppliedText: String? = null
++    private var lastAppliedHtml: String? = null
+     private var isClientEnabled = true;
+     private var _isCaptureStarted = false;
+ 
+@@ -136,8 +142,12 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
+     @Keep
+     fun rustEnableClientClipboard(enable: Boolean) {
+         Log.d(logTag, "rustEnableClientClipboard: enable: $enable")
++        // Clearing unconditionally threw the dedup anchor away on every call,
++        // including calls that did not change anything.
++        if (isClientEnabled != enable) {
++            lastUpdatedClipData = null
++        }
+         isClientEnabled = enable
+-        lastUpdatedClipData = null
+     }
+ 
+     fun syncClipboard(isClient: Boolean) {
+@@ -190,7 +200,16 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
+             Log.e(logTag, "No item in clipboard")
+             return
+         }
++        // A repeated delivery of the same payload used to call setPrimaryClip
++        // again, which on Android 13+ pops the system clipboard toast each time
++        // and looks like an endless copy loop.
++        if (text == lastAppliedText && html == lastAppliedHtml) {
++            Log.d(logTag, "clipboard content unchanged, skip")
++            return
++        }
+         val clipData = ClipData(clipDescription, item)
++        lastAppliedText = text
++        lastAppliedHtml = html
+         lastUpdatedClipData = clipData
+         clipboardManager.setPrimaryClip(clipData)
+     }
