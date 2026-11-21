@@ -69,11 +69,16 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
 
       - name: Generate bridge
         run: |
-          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          # Flutter 3.22.3 resolves Dart 3.4.4, but upstream pinned extended_text
+          # 14.0.0 which requires Dart >=3.5.0, so dependency resolution fails.
+          # Match any upstream version so a pubspec bump cannot break the sed.
+          sed -i -E -e 's/(extended_text:[[:space:]]*)[0-9]+\.[0-9]+\.[0-9]+/\113.0.0/g' flutter/pubspec.yaml
           pushd flutter && flutter pub get && popd
           ~/.cargo/bin/flutter_rust_bridge_codegen \
             --rust-input ./src/flutter_ffi.rs \
