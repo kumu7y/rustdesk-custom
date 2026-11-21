@@ -96,11 +96,27 @@ jobs:
               FAILED="$NAME"
               # Second pass with --reject collects precisely which hunks broke,
               # so the issue can say WHICH feature domain needs rebasing.
-              git apply --reject --whitespace=nowarn "$p" >/dev/null 2>&1 || true
-              while IFS= read -r r; do
-                REJ="${REJ}- \`${r#./}\`"$'\n'
-              done < <(find . -name "*.rej" | sort | head -20)
-              [ -n "$REJ" ] || REJ="- (git produced no .rej files; hunk context drifted)"$'\n'
+              # Rejects are written next to the source files, so the scan has to
+              # start at the repository root - an earlier version searched '.',
+              # which on runners that enable safe.directory is not this tree at
+              # all, and every issue body came out with an empty hunk list.
+              REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+              find "$REPO_ROOT" -name "*.rej" -delete 2>/dev/null || true
+              git apply --reject --whitespace=nowarn "$p" >/tmp/reject-out.txt 2>&1 || true
+              REJ_FILES=$(find "$REPO_ROOT" -name "*.rej" 2>/dev/null | sed "s|^$REPO_ROOT/||" | sort | head -20)
+              if [ -n "$REJ_FILES" ]; then
+                while IFS= read -r r; do
+                  [ -n "$r" ] || continue
+                  REJ="${REJ}- \`${r}\`"
+                done <<< "$REJ_FILES"
+              else
+                REJ="- (git produced no .rej files; hunk context drifted)"$'\n'
+                # Keep the raw rejection text so the issue is still actionable.
+                printf -v FENCE '```'
+                REJ="${REJ}${FENCE}"$'\n'
+                REJ="${REJ}$(sed -n '1,25p' /tmp/reject-out.txt)"$'\n'
+                REJ="${REJ}${FENCE}"$'\n'
+              fi
               break
             fi
           done
