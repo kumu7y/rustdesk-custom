@@ -317,8 +317,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" -f tag="${{ steps.check.outputs.tag }}"
-          echo "Build dispatched for ${{ steps.check.outputs.tag }} (compile gate passed)."
+          # Our release tags carry a local build suffix (1.5.3 -> 1.5.3-1). The
+          # client compares get_version_number(tag) against its embedded VERSION,
+          # so dispatching the bare upstream tag would either publish over the
+          # previous build or leave installed clients at the same version.
+          BASE_TAG="${{ steps.check.outputs.tag }}"
+          LOCAL_TAG="${BASE_TAG}-1"
+          gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" \
+            -f tag="$LOCAL_TAG" -f upstream_ref="$BASE_TAG"
+          echo "Windows build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
+          # Android has its own workflow and needs the same dispatch, otherwise a
+          # sync only ever rebuilds the desktop client.
+          gh workflow run build-android.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" \
+            -f tag="$LOCAL_TAG" -f upstream_ref="$BASE_TAG"
+          echo "Android build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
 
       - name: Open issue when the sync run fails
         # Without this, a failure above is silent: the run goes red but nothing
