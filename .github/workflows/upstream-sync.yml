@@ -330,6 +330,10 @@ jobs:
           # sync only ever rebuilds the desktop client.
           gh workflow run build-android.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" \
             -f tag="$LOCAL_TAG" -f upstream_ref="$BASE_TAG"
+          # Linux (deb + rpm) is its own workflow for the same reason.
+          gh workflow run build-linux.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" \
+            -f tag="$LOCAL_TAG" -f upstream_ref="$BASE_TAG"
+          echo "Linux build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
           echo "Android build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
 
       - name: Open issue when the sync run fails

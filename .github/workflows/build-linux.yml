@@ -1,0 +1,322 @@
+name: Build Linux Custom Client
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. 1.5.3-1)'
+        required: true
+        type: string
+      upstream_ref:
+        description: 'Upstream source ref (defaults to the release tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: "1.75"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  FLUTTER_VERSION: "3.24.5"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  UPSTREAM_REPO: "rustdesk/rustdesk"
+  SOURCE_REF: ${{ inputs.upstream_ref || inputs.tag }}
+  TAG_NAME: "${{ inputs.tag }}"
+  VERSION: "${{ inputs.tag }}"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  generate-bridge:
+    name: Generate flutter bridge
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          submodules: recursive
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake curl git libclang-dev \
+            libgtk-3-dev libssl-dev pkg-config wget
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - name: Cache bridge deps
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-bridge-cache-linux
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+
+      - name: Generate bridge
+        run: |
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --locked
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          pushd flutter && flutter pub get && popd
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Upload bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact-linux
+          retention-days: 3
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    needs: [generate-bridge]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            vcpkg_triplet: x64-linux
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android 2>/dev/null || true
+          df -h
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          submodules: recursive
+
+      - name: Checkout this pipeline repo (for patches)
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Normalize line endings of patched files
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import glob
+          files = [
+              "src/lib.rs", "src/core_main.rs", "src/common.rs", "src/ipc.rs",
+              "flutter/lib/common.dart", "flutter/lib/models/server_model.dart",
+              "flutter/lib/desktop/pages/server_page.dart",
+              "flutter/lib/desktop/pages/desktop_home_page.dart",
+              "flutter/lib/main.dart", "flutter/lib/mobile/widgets/dialog.dart",
+              "flutter/lib/common/widgets/remote_input.dart",
+              "flutter/lib/mobile/pages/remote_page.dart",
+              "libs/hbb_common/src/websocket.rs",
+          ] + sorted(glob.glob("pipeline/patches/*.patch"))
+          for f in files:
+              try:
+                  data = open(f, "rb").read()
+              except FileNotFoundError:
+                  continue
+              fixed = data.replace(b"\r\n", b"\n")
+              if fixed != data:
+                  open(f, "wb").write(fixed)
+                  print("normalized", f)
+          print("done")
+          PYEOF
+
+      - name: Apply custom client patches
+        shell: bash
+        run: |
+          for p in ./pipeline/patches/*.patch; do
+            echo "Applying $(basename "$p") ..."
+            git apply --whitespace=nowarn --verbose "$p" || {
+              echo "::error::Patch failed: $(basename "$p")"
+              exit 1
+            }
+          done
+          echo "All patches applied."
+
+      - name: Generate embedded config from secrets
+        shell: bash
+        env:
+          RD_ID_SERVER: ${{ secrets.RD_ID_SERVER }}
+          RD_RELAY_SERVER: ${{ secrets.RD_RELAY_SERVER }}
+          RD_API_SERVER: ${{ secrets.RD_API_SERVER }}
+          RD_KEY: ${{ secrets.RD_KEY }}
+          RD_PRESET_PASSWORD: ${{ secrets.RD_PRESET_PASSWORD }}
+          RD_RELEASE_REPO: ${{ secrets.RD_RELEASE_REPO }}
+          RD_WEBSOCKET_ID: ${{ secrets.RD_WEBSOCKET_ID }}
+          RD_WEBSOCKET_RELAY: ${{ secrets.RD_WEBSOCKET_RELAY }}
+          RD_HIDE_NETWORK_UI: ${{ secrets.RD_HIDE_NETWORK_UI }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          python3 ./pipeline/scripts/gen_embedded_config.py src/embedded_config.rs
+          python3 - <<'PYEOF'
+          s = open('src/embedded_config.rs', encoding='utf-8').read()
+          lines = s.count('\n')
+          syms = ['UPDATE_RELEASE_REPO_OWNER', 'UPDATE_RELEASE_REPO_NAME',
+                  'unattended_hide_cm', 'fn init', 'LOCKED_SERVER_OPTIONS']
+          missing = [k for k in syms if k not in s]
+          print(f'self-check: bytes={len(s)} lines={lines} missing={missing}')
+          if missing or lines < 30:
+              raise SystemExit('generated embedded_config.rs is incomplete!')
+          PYEOF
+
+      - name: Inject release version (Cargo.toml + Cargo.lock, keep --locked valid)
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 - <<'EOF'
+          import os, re
+          tag = os.environ['RELEASE_TAG']
+          s = open('Cargo.toml', encoding='utf-8').read()
+          s = re.sub(r'(?m)^(version\s*=\s*)"[^"]*"', lambda m: m.group(1) + f'"{tag}"', s, count=1)
+          open('Cargo.toml', 'w', encoding='utf-8', newline='').write(s)
+          s = open('Cargo.lock', encoding='utf-8').read()
+          s = re.sub(r'(name = "rustdesk"\r?\nversion = )"[^"]*"', lambda m: m.group(1) + f'"{tag}"', s, count=1)
+          open('Cargo.lock', 'w', encoding='utf-8', newline='').write(s)
+          print('injected release version:', tag)
+          EOF
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact-linux
+          path: ./
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake curl gcc g++ git \
+            libayatana-appindicator3-dev libasound2-dev libclang-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev libpulse-dev libssl-dev libva-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxdo-dev libxfixes-dev llvm-dev nasm ninja-build \
+            pkg-config rpm tree unzip wget xz-utils
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          if [[ "${{ env.FLUTTER_VERSION }}" == "3.24.5" ]]; then
+            git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install \
+            --triplet ${{ matrix.vcpkg_triplet }} \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do
+              echo "$f:"; echo "======"; cat "$f"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-lib-cache-linux
+          key: ${{ matrix.target }}
+
+      - name: Build rustdesk lib
+        shell: bash
+        run: |
+          cargo build --locked --lib --release \
+            --features hwcodec,flutter,unix-file-copy-paste
+
+      - name: Build deb package
+        # build.py writes rustdesk-<Cargo.toml version>.deb at the repository root
+        # and derives the version from Cargo.toml, which the injection step above
+        # already set to our release tag.
+        shell: bash
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          python3 ./build.py --flutter --skip-cargo
+          mkdir -p dist
+          DEB="rustdesk-${VERSION}.deb"
+          if [ ! -f "$DEB" ]; then
+            echo "::error::expected $DEB, found:"
+            ls -la *.deb 2>/dev/null || echo '  (no .deb at all)'
+            exit 1
+          fi
+          cp "$DEB" "dist/rustdesk-${VERSION}-${{ matrix.arch }}.deb"
+          ls -la dist
+
+      - name: Build rpm package
+        shell: bash
+        run: |
+          # The spec packages an already built bundle, so it needs no rebuild.
+          sed -i "s/^Version:.*/Version:    ${VERSION}/" res/rpm-flutter.spec
+          HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb
+          RPMDIR=$(find ~/rpmbuild/RPMS -name 'rustdesk-*.rpm' | head -1)
+          if [ -z "$RPMDIR" ]; then
+            echo '::error::rpmbuild produced no package'
+            exit 1
+          fi
+          cp "$RPMDIR" "dist/rustdesk-${VERSION}-${{ matrix.arch }}.rpm"
+          ls -la dist
+
+      - name: Publish Linux packages
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            dist/*.deb
+            dist/*.rpm
+          fail_on_unmatched_files: true
