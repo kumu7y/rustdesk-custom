@@ -311,7 +311,17 @@ jobs:
         shell: bash
         run: |
           # The spec packages an already built bundle, so it needs no rebuild.
-          sed -i "s/^Version:.*/Version:    ${VERSION}/" res/rpm-flutter.spec
+          # rpm splits the package version into Version and Release, and Version
+          # may not contain a dash: "1.5.3-1" is rejected with
+          # "Illegal char '-' (0x2d) in: Version". Our tags carry a local build
+          # suffix, so split it - Version 1.5.3, Release 1.
+          BASE_VERSION="${VERSION%%-*}"
+          LOCAL_RELEASE="${VERSION#*-}"
+          [ "$LOCAL_RELEASE" = "$VERSION" ] && LOCAL_RELEASE="0"
+          sed -i "s/^Version:.*/Version:    ${BASE_VERSION}/" res/rpm-flutter.spec
+          sed -i "s/^Release:.*/Release:    ${LOCAL_RELEASE}/" res/rpm-flutter.spec
+          echo "rpm version: ${BASE_VERSION}-${LOCAL_RELEASE}"
+          grep -E "^(Version|Release):" res/rpm-flutter.spec
           HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb
           RPMDIR=$(find ~/rpmbuild/RPMS -name 'rustdesk-*.rpm' | head -1)
           if [ -z "$RPMDIR" ]; then
