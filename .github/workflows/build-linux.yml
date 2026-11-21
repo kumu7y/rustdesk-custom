@@ -91,10 +91,16 @@ jobs:
         with:
           name: bridge-artifact-linux
           retention-days: 3
+          # generated_bridge.freezed.dart is emitted by the codegen and is a
+          # 'part of' the bridge file. Without it flutter build linux fails with
+          # "Error when reading 'lib/generated_bridge.freezed.dart'".
           path: |
             ./src/bridge_generated.rs
             ./src/bridge_generated.io.rs
             ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
 
   build-linux:
     name: Build Linux ${{ matrix.arch }}
