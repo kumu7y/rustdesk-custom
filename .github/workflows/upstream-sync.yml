@@ -336,6 +336,7 @@ jobs:
           echo "Linux build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
           echo "Android build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
 
+
       - name: Open issue when the sync run fails
         # Without this, a failure above is silent: the run goes red but nothing
         # reaches the issue tracker, which is how a broken gate goes unnoticed.
@@ -356,3 +357,24 @@ jobs:
 
           Patch validation and compile-gate failures open their own issues, so reaching this one usually means the checkout, the pin sync or the dispatch plumbing broke."
           fi
+
+  # The signing workflow itself waits for the release to hold every platform
+  # package, which is the only reliable ground truth. Polling run timestamps
+  # here did not work: the builds are dispatched before this job starts, so a
+  # 'created after now' filter matched nothing and the wait exited at once.
+  sign-update-metadata:
+    name: Dispatch update metadata signing
+    needs: [sync]
+    if: needs.sync.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch signing for the tag this run built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_TAG: ${{ needs.sync.outputs.tag }}-1
+        run: |
+          gh workflow run sign-update-metadata.yml --repo "${GITHUB_REPOSITORY}" \
+            --ref "${{ github.ref_name }}" -f tag="$LOCAL_TAG"
+          echo "Signing dispatched for $LOCAL_TAG; it waits for all platform assets."

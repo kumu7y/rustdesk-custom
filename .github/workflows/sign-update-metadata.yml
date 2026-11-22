@@ -1,0 +1,103 @@
+name: Sign Update Metadata
+
+# Signs the update sidecars (rustdesk-update.json + .sig) for one release.
+#
+# Signing cannot live inside each build workflow: Linux finishes around 02:32
+# while Android's APKs land at 02:42 and Windows' exe/msi at 02:55, so each
+# run would sign a list missing whatever came later and the last writer would
+# decide the final contents. Instead the release is described once, here,
+# after the platforms have published - dispatched by upstream-sync with an
+# explicit tag, or run by hand to repair stale sidecars.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sign (e.g. 1.5.3-2)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    name: Sign update metadata for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this pipeline repo (for the signing tool)
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Wait for every platform's assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          # Signing a partial list is the exact bug this workflow exists to fix:
+          # Linux finishes around 02:32, Android's APKs land at 02:42, Windows'
+          # exe/msi at 02:55. Require one asset of every expected kind, not just
+          # a count, so a release that only has Linux packages waits.
+          want_present() {
+            gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets \
+              --jq '[.assets[].name] | join("\n")' 2>/dev/null || true
+          }
+          for i in $(seq 1 60); do
+            NAMES=$(want_present)
+            MISSING=""
+            echo "$NAMES" | grep -qE '\.exe$' || MISSING="$MISSING exe"
+            echo "$NAMES" | grep -qE '\.msi$' || MISSING="$MISSING msi"
+            echo "$NAMES" | grep -qE 'arm64-v8a.*\.apk$' || MISSING="$MISSING apk-arm64"
+            echo "$NAMES" | grep -qE 'armeabi-v7a.*\.apk$' || MISSING="$MISSING apk-armv7"
+            echo "$NAMES" | grep -qE '\.deb$' || MISSING="$MISSING deb"
+            echo "$NAMES" | grep -qE '\.rpm$' || MISSING="$MISSING rpm"
+            if [ -z "$MISSING" ]; then
+              echo 'all six platform package kinds present'
+              break
+            fi
+            echo "attempt $i: still missing:$MISSING"
+            sleep 60
+          done
+          echo '--- assets on the release ---'
+          echo "$NAMES" | sort
+
+      - name: Download published assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --clobber
+          ls -la dist
+
+      - name: Generate rustdesk-update.json and .sig
+        env:
+          UPDATE_SIGNING_SEED_HEX: ${{ secrets.UPDATE_SIGNING_SEED_HEX }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_SEED_HEX" ]; then
+            echo '::error::secret UPDATE_SIGNING_SEED_HEX is not set; clients cannot verify updates without it.'
+            exit 1
+          fi
+          python3 -m pip install --quiet cryptography
+          python3 ./pipeline/scripts/sign_update_metadata.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --version "$TAG" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out-dir dist \
+            dist/*
+          echo '--- metadata ---'
+          cat dist/rustdesk-update.json
+
+      - name: Upload sidecars to the release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            dist/rustdesk-update.json
+            dist/rustdesk-update.json.sig
+          fail_on_unmatched_files: true
