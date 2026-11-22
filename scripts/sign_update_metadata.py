@@ -33,32 +33,42 @@ def platform_arch_format(name):
     """Infer (platform, arch, format) from an asset file name.
 
     Mirrors current_update_platform/arch/format in src/updater/artifact.rs:
-      windows -> "windows", macOS -> "macos", else std::env::consts::OS
-      windows flutter -> "x86_64"/"aarch64" (std::env::consts::ARCH), msi or exe
+      platform: "windows" / "macos" / otherwise std::env::consts::OS
+      arch:     std::env::consts::ARCH, so x86_64 / aarch64 / arm
+      format:   exe / msi / dmg / (linux formats are not queried by clients)
+
+    Returns a list of candidate arch values, most specific first, because a
+    single guess silently mislabelled armeabi-v7a as x86_64: the name contains
+    neither "x86_64" nor "aarch64", so the fallback picked x86_64 and an ARM
+    client would never have matched its own package.
     """
     lower = name.lower()
-    if "x86_64" in lower:
-        arch = "x86_64"
-    elif "aarch64" in lower or "arm64" in lower:
-        arch = "aarch64"
-    elif "armv7" in lower or "armhf" in lower:
-        arch = "arm"
+
+    if "arm64-v8a" in lower or "aarch64" in lower or "arm64" in lower:
+        archs = ["aarch64"]
+    elif "armeabi-v7a" in lower or "armv7" in lower or "armhf" in lower:
+        # Rust reports std::env::consts::ARCH = "arm" on 32-bit ARM.
+        archs = ["arm"]
+    elif "x86_64" in lower or "amd64" in lower:
+        archs = ["x86_64"]
+    elif "i686" in lower or "i386" in lower:
+        archs = ["x86"]
     else:
-        arch = "x86_64"
+        archs = []
 
     if lower.endswith(".msi"):
-        return "windows", arch, "msi"
+        return [("windows", a, "msi") for a in archs]
     if lower.endswith(".exe"):
-        return "windows", arch, "exe"
+        return [("windows", a, "exe") for a in archs]
     if lower.endswith(".dmg"):
-        return "macos", arch, "dmg"
+        return [("macos", a, "dmg") for a in archs]
     if lower.endswith(".deb"):
-        return "linux", arch, "deb"
+        return [("linux", a, "deb") for a in archs]
     if lower.endswith(".rpm"):
-        return "linux", arch, "rpm"
+        return [("linux", a, "rpm") for a in archs]
     if lower.endswith(".apk"):
-        return "android", arch, "apk"
-    return None
+        return [("android", a, "apk") for a in archs]
+    return []
 
 
 def main():
@@ -105,20 +115,20 @@ def main():
         if not os.path.isfile(path):
             sys.exit("missing asset: %s" % path)
         name = os.path.basename(path)
-        kind = platform_arch_format(name)
-        if kind is None:
+        kinds = platform_arch_format(name)
+        if not kinds:
             print("skipping unsupported asset type: %s" % name, file=sys.stderr)
             continue
-        platform, arch, fmt = kind
-        artifacts.append({
-            "platform": platform,
-            "arch": arch,
-            "format": fmt,
-            "url": "https://github.com/%s/releases/download/%s/%s" % (args.repo, args.tag, name),
-            "file_name": name,
-            "size": os.path.getsize(path),
-            "sha256": sha256_file(path),
-        })
+        for platform, arch, fmt in kinds:
+            artifacts.append({
+                "platform": platform,
+                "arch": arch,
+                "format": fmt,
+                "url": "https://github.com/%s/releases/download/%s/%s" % (args.repo, args.tag, name),
+                "file_name": name,
+                "size": os.path.getsize(path),
+                "sha256": sha256_file(path),
+            })
 
     if not artifacts:
         sys.exit("no supported assets given")
