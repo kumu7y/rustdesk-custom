@@ -186,6 +186,9 @@ jobs:
               "flutter/lib/mobile/pages/remote_page.dart",
               "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt",
               "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt",
+              "src/update_metadata.rs",
+              "src/update_metadata/artifact.rs",
+              "src/updater/artifact.rs",
               "libs/hbb_common/src/websocket.rs",
           ] + sorted(glob.glob("pipeline/patches/*.patch"))
           for f in files:
@@ -485,9 +488,61 @@ jobs:
               ./dist/rustdesk-*
           fi
 
+  # Must run after publish: the metadata hashes the final assets and its URL
+  # prefix has to name the release they were uploaded to. The Linux workflow
+  # has the same job; whichever finishes last rewrites the full metadata from
+  # everything currently on the release, so the list is always complete.
+  sign-update-metadata:
+    name: Sign update metadata
+    needs: [publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this pipeline repo (for the signing tool)
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Download published assets
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --dir dist --clobber
+          ls -la dist
+
+      - name: Generate rustdesk-update.json and .sig
+        env:
+          UPDATE_SIGNING_SEED_HEX: ${{ secrets.UPDATE_SIGNING_SEED_HEX }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_SEED_HEX" ]; then
+            echo '::error::secret UPDATE_SIGNING_SEED_HEX is not set; clients cannot verify updates without it.'
+            exit 1
+          fi
+          python3 -m pip install --quiet cryptography
+          python3 ./pipeline/scripts/sign_update_metadata.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${TAG_NAME}" \
+            --version "${TAG_NAME}" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out-dir dist \
+            --merge-platform windows \
+            dist/*
+          ls -la dist/rustdesk-update.json*
+
+      - name: Upload sidecars to the release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            dist/rustdesk-update.json
+            dist/rustdesk-update.json.sig
+          fail_on_unmatched_files: true
+
   alert:
     name: Alert on failure
-    needs: [generate-bridge, build-topmost-window, build-windows-x64, publish]
+    needs: [generate-bridge, build-topmost-window, build-windows-x64, publish, sign-update-metadata]
     if: failure() || cancelled()
     runs-on: ubuntu-latest
     permissions:

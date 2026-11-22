@@ -192,6 +192,9 @@ jobs:
               "flutter/lib/mobile/pages/remote_page.dart",
               "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt",
               "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/RdClipboardManager.kt",
+              "src/update_metadata.rs",
+              "src/update_metadata/artifact.rs",
+              "src/updater/artifact.rs",
               "libs/hbb_common/src/websocket.rs",
           ] + sorted(glob.glob("pipeline/patches/*.patch"))
           for f in files:
