@@ -1,0 +1,24 @@
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -124,7 +124,7 @@
+         ? const SizedBox(height: 0)
+         : InkWell(
+             onTap: () async {
+-              final url = 'https://rustdesk.com/download';
++              final url = 'https://rustdesk.aircore.top:8888/download/latest.html';
+               // https://pub.dev/packages/url_launcher#configuration
+               // https://developer.android.com/training/package-visibility/use-cases#open-urls-custom-tabs
+               //
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -435,7 +435,7 @@
+       final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
+       String btnText = isToUpdate ? 'Update' : 'Download';
+       GestureTapCallback onPressed = () async {
+-        final Uri url = Uri.parse('https://rustdesk.com/download');
++        final Uri url = Uri.parse('https://rustdesk.aircore.top:8888/download/latest.html');
+         await launchUrl(url);
+       };
+       if (isToUpdate) {
