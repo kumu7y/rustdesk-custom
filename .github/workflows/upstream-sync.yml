@@ -44,9 +44,10 @@ jobs:
           UPSTREAM_TAG=$(gh api repos/${UPSTREAM_REPO}/releases/latest --jq '.tag_name')
           echo "Upstream latest release: ${UPSTREAM_TAG}"
           echo "Release repo being watched: ${RELEASE_REPO}"
-          # Our release tags may carry a local suffix (e.g. 1.4.9 -> 1.4.9-1),
-          # so match the upstream tag with an optional -N suffix.
-          if gh api "repos/${RELEASE_REPO}/releases?per_page=100" --jq '.[].tag_name' | grep -qE "^${UPSTREAM_TAG}(-[0-9]+)?$"; then
+          # Our release tags carry a local suffix: legacy dash (1.4.9-1, still
+          # accepted) or current dot (1.4.9.1). Match either form, or an
+          # already-built upstream tag would be rebuilt on every sync.
+          if gh api "repos/${RELEASE_REPO}/releases?per_page=100" --jq '.[].tag_name' | grep -qE "^${UPSTREAM_TAG}(-[0-9]+|\.[0-9]+)?$"; then
             echo "Release ${UPSTREAM_TAG} already published, nothing to do."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
@@ -317,12 +318,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Our release tags carry a local build suffix (1.5.3 -> 1.5.3-1). The
+          # Our release tags carry a local build suffix (1.5.3 -> 1.5.3.1). The
           # client compares get_version_number(tag) against its embedded VERSION,
           # so dispatching the bare upstream tag would either publish over the
           # previous build or leave installed clients at the same version.
           BASE_TAG="${{ steps.check.outputs.tag }}"
-          LOCAL_TAG="${BASE_TAG}-1"
+          LOCAL_TAG="${BASE_TAG}.1"
           gh workflow run build-windows.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ github.ref_name }}" \
             -f tag="$LOCAL_TAG" -f upstream_ref="$BASE_TAG"
           echo "Windows build dispatched for ${LOCAL_TAG} (base ${BASE_TAG})."
@@ -373,7 +374,7 @@ jobs:
       - name: Dispatch signing for the tag this run built
         env:
           GH_TOKEN: ${{ github.token }}
-          LOCAL_TAG: ${{ needs.sync.outputs.tag }}-1
+          LOCAL_TAG: ${{ needs.sync.outputs.tag }}.1
         run: |
           gh workflow run sign-update-metadata.yml --repo "${GITHUB_REPOSITORY}" \
             --ref "${{ github.ref_name }}" -f tag="$LOCAL_TAG"

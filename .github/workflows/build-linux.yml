@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish (e.g. 1.5.3-1)'
+        description: 'Release tag to publish (e.g. 1.5.3.1)'
         required: true
         type: string
       upstream_ref:
@@ -315,9 +315,10 @@ jobs:
         run: |
           # The spec packages an already built bundle, so it needs no rebuild.
           # rpm splits the package version into Version and Release, and Version
-          # may not contain a dash: "1.5.3-1" is rejected with
-          # "Illegal char '-' (0x2d) in: Version". Our tags carry a local build
-          # suffix, so split it - Version 1.5.3, Release 1.
+          # may not contain a dash: legacy "1.5.3-1" is rejected with
+          # "Illegal char '-' (0x2d) in: Version". Current tags use a dot suffix
+          # (1.5.3.1), which is a legal rpm Version; keep the split so old tags
+          # can still be rebuilt. Release falls back to 0 when there is no dash.
           BASE_VERSION="${VERSION%%-*}"
           LOCAL_RELEASE="${VERSION#*-}"
           [ "$LOCAL_RELEASE" = "$VERSION" ] && LOCAL_RELEASE="0"

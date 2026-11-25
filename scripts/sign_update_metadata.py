@@ -74,8 +74,8 @@ def platform_arch_format(name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="owner/name, e.g. kumu7y/rustdesk-custom")
-    ap.add_argument("--tag", required=True, help="release tag, e.g. 1.5.3-1")
-    ap.add_argument("--version", required=True, help="display version, e.g. 1.5.3-1")
+    ap.add_argument("--tag", required=True, help="release tag, e.g. 1.5.3.1")
+    ap.add_argument("--version", required=True, help="display version, e.g. 1.5.3.1")
     ap.add_argument("--published-at", default="")
     ap.add_argument("--out-dir", default="dist")
     ap.add_argument(
