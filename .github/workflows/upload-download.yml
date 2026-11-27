@@ -1,0 +1,86 @@
+name: Upload to Download Site
+
+# Manual-only upload of already-built artifacts. No compile, no GitHub
+# release. Used to verify the WebDAV path or to re-publish assets after
+# a failed build without rebuilding everything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag used as the WebDAV directory (e.g. 1.5.3-2)'
+        required: true
+        type: string
+      asset_url:
+        description: 'Optional: download one asset from the GitHub release instead of uploading a file'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          ASSET_URL: ${{ inputs.asset_url }}
+        run: |
+          set -e
+          mkdir -p dist
+          if [ -n "$ASSET_URL" ]; then
+            echo "downloading $ASSET_URL"
+            curl -sSfL "$ASSET_URL" -o "dist/$(basename "$ASSET_URL" | cut -d? -f1)"
+          else
+            # Pull everything already published on this tag.
+            gh release download "$TAG" --repo "${GITHUB_REPOSITORY}" --dir dist --clobber
+          fi
+          # Never feed the sidecars back as packages.
+          rm -f dist/rustdesk-update.json dist/rustdesk-update.json.sig
+          ls -la dist
+
+      - name: Upload to fnos WebDAV
+        shell: bash
+        env:
+          WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
+          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
+          WEBDAV_URL: https://webdav.aircore.top:8888/WebDAV/rustdesk-download
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          AUTH=$(printf "%s:%s" "$WEBDAV_USER" "$WEBDAV_PASSWORD" | base64 -w0)
+          BASE="$WEBDAV_URL/$TAG"
+          echo "creating $BASE/"
+          curl -sS -o /dev/null -X MKCOL -H "Authorization: Basic $AUTH" "$BASE/" || true
+          for f in dist/*; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            echo "uploading $name ($(stat -c%s "$f") bytes)"
+            curl -sS -f -T "$f" -H "Authorization: Basic $AUTH" "$BASE/$name"
+          done
+          {
+            printf "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>RustDesk %s</title></head><body>\n" "$TAG"
+            printf "<h1>RustDesk %s</h1><ul>\n" "$TAG"
+            for f in dist/*; do
+              [ -f "$f" ] || continue
+              name=$(basename "$f")
+              printf "<li><a href=\"%s\">%s</a> (%s bytes)</li>\n" "$name" "$name" "$(stat -c%s "$f")"
+            done
+            printf "</ul></body></html>\n"
+          } > /tmp/index.html
+          curl -sS -f -T /tmp/index.html -H "Authorization: Basic $AUTH" "$BASE/index.html"
+          printf '<!DOCTYPE html><html><head><meta charset="utf-8"><title>RustDesk</title></head><body><h1>RustDesk %s</h1><p><a href="%s/">%s</a></p></body></html>' "$TAG" "$TAG" "$TAG" > /tmp/latest.html
+          curl -sS -f -T /tmp/latest.html -H "Authorization: Basic $AUTH" "$WEBDAV_URL/latest.html"
+          echo "uploaded to https://rustdesk.aircore.top:8888/download/$TAG/"
+
+      - name: Verify public read
+        shell: bash
+        run: |
+          set -e
+          curl -sSfL -o /dev/null -w 'latest.html: %{http_code}\n' https://rustdesk.aircore.top:8888/download/latest.html
+          curl -sSfL -o /dev/null -w 'version index: %{http_code}\n' https://rustdesk.aircore.top:8888/download/${{ inputs.tag }}/
+
