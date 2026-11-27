@@ -43,39 +43,31 @@ jobs:
           rm -f dist/rustdesk-update.json dist/rustdesk-update.json.sig
           ls -la dist
 
-      - name: Upload to fnos WebDAV
+      - name: Upload via aircore.top (SSH then internal WebDAV)
         shell: bash
         env:
-          WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
-          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
-          WEBDAV_URL: https://webdav.aircore.top:8888/WebDAV/rustdesk-download
+          DOWNLOAD_SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          DOWNLOAD_HOST: ${{ vars.DOWNLOAD_HOST }}
           TAG: ${{ inputs.tag }}
         run: |
           set -e
-          AUTH=$(printf "%s:%s" "$WEBDAV_USER" "$WEBDAV_PASSWORD" | base64 -w0)
-          BASE="$WEBDAV_URL/$TAG"
-          echo "creating $BASE/"
-          curl -sS -o /dev/null -X MKCOL -H "Authorization: Basic $AUTH" "$BASE/" || true
-          for f in dist/*; do
-            [ -f "$f" ] || continue
-            name=$(basename "$f")
-            echo "uploading $name ($(stat -c%s "$f") bytes)"
-            curl -sS -f -T "$f" -H "Authorization: Basic $AUTH" "$BASE/$name"
-          done
-          {
-            printf "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>RustDesk %s</title></head><body>\n" "$TAG"
-            printf "<h1>RustDesk %s</h1><ul>\n" "$TAG"
-            for f in dist/*; do
-              [ -f "$f" ] || continue
-              name=$(basename "$f")
-              printf "<li><a href=\"%s\">%s</a> (%s bytes)</li>\n" "$name" "$name" "$(stat -c%s "$f")"
-            done
-            printf "</ul></body></html>\n"
-          } > /tmp/index.html
-          curl -sS -f -T /tmp/index.html -H "Authorization: Basic $AUTH" "$BASE/index.html"
-          printf '<!DOCTYPE html><html><head><meta charset="utf-8"><title>RustDesk</title></head><body><h1>RustDesk %s</h1><p><a href="%s/">%s</a></p></body></html>' "$TAG" "$TAG" "$TAG" > /tmp/latest.html
-          curl -sS -f -T /tmp/latest.html -H "Authorization: Basic $AUTH" "$WEBDAV_URL/latest.html"
-          echo "uploaded to https://rustdesk.aircore.top:8888/download/$TAG/"
+          if [ -z "$DOWNLOAD_SSH_KEY" ]; then
+            echo "::error::DOWNLOAD_SSH_KEY is not set"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DOWNLOAD_SSH_KEY" > ~/.ssh/dl_key
+          chmod 600 ~/.ssh/dl_key
+          ssh-keyscan -p 22 "$DOWNLOAD_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          SSH="ssh -i ~/.ssh/dl_key -o StrictHostKeyChecking=accept-new root@${DOWNLOAD_HOST}"
+          REMOTE="/tmp/rustdesk-upload-${TAG}"
+          echo "clearing $REMOTE on the server"
+          $SSH "rm -rf '$REMOTE' && mkdir -p '$REMOTE'"
+          echo "copying $(ls dist | wc -l) file(s) over SSH"
+          scp -i ~/.ssh/dl_key -o StrictHostKeyChecking=accept-new \
+            dist/* "root@${DOWNLOAD_HOST}:${REMOTE}/"
+          echo "publishing from inside the server network"
+          $SSH "sudo /usr/local/bin/rustdesk-webdav-publish.sh '$TAG' '$REMOTE' && rm -rf '$REMOTE'"
 
       - name: Verify public read
         shell: bash
