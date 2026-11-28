@@ -17,8 +17,9 @@ fnos WebDAV  http://192.168.3.43:5005/WebDAV/rustdesk-download/<version>/
 访客  https://rustdesk.aircore.top:8888/download/<version>/<file>
 ```
 
-三个构建 workflow（Windows / Android / Linux）各有一个同名步骤 `Upload packages to fnos WebDAV`，
-位于发布之后；产物上传完后生成两个页面：
+CI **不参与**下载站同步。三个构建 workflow 只负责编译并把产物发布到 GitHub release。
+下载站由 aircore.top 上的同步脚本从 GitHub 拉取产物后发布（见下）。
+每次同步生成两个页面：
 
 - `<version>/index.html` — 该版本的文件列表
 - `latest.html` — 固定地址，只指向最新版本，客户端按钮指向它
@@ -73,16 +74,31 @@ proxy_set_header Authorization "Basic <base64(user:pass)>";
 `max-age=31536000; includeSubDomains; preload` 收敛为 `max-age=31536000`，
 避免影响独立的 `hz.aircore.top` 和非 HTTPS 端口。
 
+## 同步脚本（服务器端）
+
+```bash
+# 从 GitHub release 拉产物（经本地 Clash 7890），再走内网 PUT 到 fnos
+/usr/local/bin/rustdesk-sync-release.sh 1.5.3-2
+```
+
+脚本流程：
+
+1. `curl -x http://127.0.0.1:7890` 调 GitHub API 取 release 资产列表
+2. 逐个下载产物到 `/tmp/rustdesk-sync-<tag>/`（跳过 update sidecar 和 API 元数据）
+3. 调用 `rustdesk-webdav-publish.sh` 从内网 PUT 到 fnos，并生成 index.html / latest.html
+4. 清理临时目录
+
+实测完整同步（`1.5.3-2` 的 6 个产物约 170MB）约 2 分钟，产物大小和 GitHub release 完全一致。
+Clash 是必需的：服务器直连 GitHub 2 分钟只有 1MB，经 Clash 25MB 约 6 秒。
+
 ## GitHub 配置
 
 | 类型 | 名称 | 值 |
 |---|---|---|
 | Secret | `WEBDAV_USER` | fnos 账户名 |
 | Secret | `WEBDAV_PASSWORD` | fnos 账户密码 |
-| Secret | `DOWNLOAD_SSH_KEY` | 备用：CI 到 aircore.top 的 SSH 私钥（当前上传走 WebDAV，未使用） |
-| Variable | `DOWNLOAD_HOST` | `aircore.top` |
-
-CI 上传脚本里 `WEBDAV_URL` 是硬编码的 `https://webdav.aircore.top:8888/WebDAV/rustdesk-download`。
+CI 不再持有任何下载站相关 secret 或 SSH 密钥（已清理）。
+WebDAV 凭据只在服务器 `/etc/nginx/snippets/webdav_download_auth.conf`，同步脚本直接复用该文件，不存第三份。
 
 ## 客户端链接
 
@@ -137,5 +153,6 @@ curl -T package.exe -H "Authorization: $AUTH" "$BASE/package.exe"
 恢复前先 `nginx -t`，再 `nginx -s reload`。注意该备份**不含**下载站配置，
 直接整目录覆盖会把 `/download/` 一起删掉。
 
-相关提交：`ad0a8b1`（下载站 + 补丁 130）。
+相关提交：`ad0a8b1`（下载站 + 补丁 130）、`85cb023`（文档）、`1b04331`（已回退的 SSH 方案）。
+CI 上传逻辑已全部移除，同步脚本只存在于服务器 `/usr/local/bin/`。
 审计会话：Antigravity `018b7595-5d60-48e6-b778-bddeafd5e83a`（Nginx Configuration Optimization Review）。

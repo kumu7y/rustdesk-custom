@@ -488,44 +488,6 @@ jobs:
               ./dist/rustdesk-*
           fi
 
-      - name: Upload packages to fnos WebDAV
-        shell: bash
-        env:
-          WEBDAV_USER: ${{ secrets.WEBDAV_USER }}
-          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
-          WEBDAV_URL: https://webdav.aircore.top:8888/WebDAV/rustdesk-download
-        run: |
-          set -e
-          if [ -z "$WEBDAV_USER" ] || [ -z "$WEBDAV_PASSWORD" ]; then
-            echo "::warning::WebDAV credentials missing; skipping download-site upload"
-            exit 0
-          fi
-          AUTH=$(printf "%s:%s" "$WEBDAV_USER" "$WEBDAV_PASSWORD" | base64 -w0)
-          BASE="$WEBDAV_URL/${VERSION}"
-          echo "Creating $BASE/"
-          curl -sS -o /dev/null -X MKCOL -H "Authorization: Basic $AUTH" "$BASE/" || true
-          for f in dist/*; do
-            [ -f "$f" ] || continue
-            name=$(basename "$f")
-            echo "uploading $name ($(stat -c%s "$f") bytes)"
-            curl -sS -f -T "$f" -H "Authorization: Basic $AUTH" "$BASE/$name"
-          done
-          # Index page so /download/<version>/ opens directly.
-          {
-            printf "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>RustDesk %s</title></head><body>\n" "$VERSION"
-            printf "<h1>RustDesk %s</h1><ul>\n" "$VERSION"
-            for f in dist/*; do
-              [ -f "$f" ] || continue
-              name=$(basename "$f")
-              printf "<li><a href=\"%s\">%s</a> (%s bytes)</li>\n" "$name" "$name" "$(stat -c%s "$f")"
-            done
-            printf "</ul></body></html>\n"
-          } > /tmp/index.html
-          curl -sS -f -T /tmp/index.html -H "Authorization: Basic $AUTH" "$BASE/index.html"
-          # Stable page the client's Download button points at.
-          printf '<!DOCTYPE html><html><head><meta charset="utf-8"><title>RustDesk</title></head><body><h1>RustDesk %s</h1><p><a href="%s/">%s</a></p></body></html>' "$VERSION" "$VERSION" "$VERSION" > /tmp/latest.html
-          curl -sS -f -T /tmp/latest.html -H "Authorization: Basic $AUTH" "$WEBDAV_URL/latest.html"
-          echo "Uploaded to https://rustdesk.aircore.top:8888/download/${VERSION}/"
   alert:
     name: Alert on failure
     needs: [generate-bridge, build-topmost-window, build-windows-x64, publish]
